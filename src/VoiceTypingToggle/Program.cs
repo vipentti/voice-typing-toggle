@@ -13,7 +13,6 @@ partial class Program
     const uint WmHotkey = 0x0312;
     const uint WmTimer = 0x0113;
     const uint WmQueryEndSession = 0x0011;
-    const uint WmEndSession = 0x0016;
     const uint WmDestroy = 0x0002;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
@@ -49,10 +48,6 @@ partial class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
 
-    [LibraryImport("user32.dll", EntryPoint = "UnregisterHotKey")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool UnregisterHotKey(nint hWnd, int id);
-
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClassW(ref WNDCLASSW wndClass);
 
@@ -74,15 +69,7 @@ partial class Program
     private static partial nint DispatchMessageW(in MSG lpMsg);
 
     [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(nint hWnd);
-
-    [LibraryImport("user32.dll")]
     private static partial nint SetTimer(nint hWnd, nint nIDEvent, uint uElapse, nint lpTimerFunc);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool KillTimer(nint hWnd, nint uIDEvent);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -214,9 +201,6 @@ partial class Program
             _ = TranslateMessage(in msg);
             _ = DispatchMessageW(in msg);
         }
-        _ = KillTimer(hwnd, TimerId);
-        _ = UnregisterHotKey(hwnd, HotkeyId);
-        _ = DestroyWindow(hwnd);
         return 0;
     }
 
@@ -233,9 +217,6 @@ partial class Program
             case WmQueryEndSession:
                 RestoreIfDictating();
                 return 1; // allow shutdown
-            case WmDestroy:
-                _ = DefWindowProcW(hWnd, msg, wParam, lParam);
-                return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
@@ -276,7 +257,7 @@ partial class Program
         // Fail closed: only start voice typing after the English layout is confirmed active.
         if (current != _englishLayout)
         {
-            if (!RequestLayout(hwnd, _englishLayout) || WaitForLayout(tid, _englishLayout, SwitchTimeoutMs) < 0)
+            if (!RequestLayout(hwnd, _englishLayout) || !WaitForLayout(tid, _englishLayout, SwitchTimeoutMs))
             {
                 return; // stay Idle
             }
@@ -305,23 +286,16 @@ partial class Program
         {
             Thread.Sleep(10);
         }
-        nint restoreTarget = _savedWindow;
-        // The bar's close can drop focus to the taskbar; the saved window is the real target.
-        if (restoreTarget == 0)
+        if (_savedWindow != 0)
         {
-            restoreTarget = GetForegroundWindow();
+            _ = RestoreFocus(_savedWindow); // restore focus first, then layout: shortest visible blip
         }
-        if (restoreTarget != 0)
+        if (_savedLayout != 0)
         {
-            bool ok = RestoreFocus(restoreTarget); // restore focus first, then layout: shortest visible blip
-            _ = ok;
-        }
-        if (restoreTarget != 0 && _savedLayout != 0)
-        {
-            uint tid = GetWindowThreadProcessId(restoreTarget, out _);
+            uint tid = GetWindowThreadProcessId(_savedWindow, out _);
             if (GetKeyboardLayout(tid) != _savedLayout)
             {
-                _ = RequestLayout(restoreTarget, _savedLayout);
+                _ = RequestLayout(_savedWindow, _savedLayout);
             }
         }
         _savedLayout = 0;
@@ -399,18 +373,18 @@ partial class Program
     static bool RequestLayout(nint hwnd, nint hkl) =>
         SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
 
-    static int WaitForLayout(uint tid, nint expected, int timeoutMs)
+    static bool WaitForLayout(uint tid, nint expected, int timeoutMs)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < timeoutMs)
         {
             if (GetKeyboardLayout(tid) == expected)
             {
-                return (int)sw.ElapsedMilliseconds;
+                return true;
             }
             Thread.Sleep(PollIntervalMs);
         }
-        return -1;
+        return false;
     }
 
     static void SendWinH()
