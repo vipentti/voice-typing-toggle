@@ -21,10 +21,38 @@ sealed partial class Program
     const uint KeyeventfScanCode = 0x0008;
     const ushort VK_RWIN = 0x5C;
 
+    // stop-flash watchdog: watch for the TextInputHost "Listening..." popup
+    // reappearing after a stop (the bar reopened; the core runs a corrective pass).
+    const uint EventObjectShow = 0x8002;
+    const int ObjidWindow = 0;
+
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     private static partial nint GetForegroundWindow();
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial nint SetWinEventHook(uint eventMin, uint eventMax, nint hmodWinEventProc, WinEventProc pfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsWindowVisible(nint hWnd);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool EnumWindows(EnumWindowsProc lpEnumFunc, nint lParam);
+
+    private delegate bool EnumWindowsProc(nint hWnd, nint lParam);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(nint hWnd, char[] lpClassName, int nMaxCount);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextW(nint hWnd, char[] lpString, int nMaxCount);
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     private static partial uint GetWindowThreadProcessId(nint hWnd, out uint processId);
@@ -96,6 +124,10 @@ sealed partial class Program
     private static partial uint GetCurrentThreadId();
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("kernel32.dll")]
+    private static partial ulong GetTickCount64();
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint GetModuleHandleW(string? lpModuleName);
 
@@ -162,12 +194,19 @@ sealed partial class Program
 
     private delegate nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam);
     private static readonly WndProc WndProcDelegate = WindowProc; // keep GC root for the lifetime of the class
+
+    private delegate void WinEventProc(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+    private static readonly WinEventProc WinEventCallback = OnVoiceUiEvent; // rooted: out-of-context hook calls back through the message loop
     private const uint InputKeyboard = 1;
 
     private static ToggleCore Core = null!;
+    private static DiagnosticTrace Trace = DiagnosticTrace.Disabled;
 
     static int Main()
     {
+        Trace = DiagnosticTrace.CreateFromEnvironment();
+        bool restoreFocusedLayout = Environment.GetEnvironmentVariable("VTT_RESTORE_FOCUSED_LAYOUT") == "1";
+
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
         nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count) : 0;
@@ -188,7 +227,12 @@ sealed partial class Program
             SendEscape = SendEscape,
             RestoreFocus = RestoreFocus,
             Sleep = Thread.Sleep,
+            IsVoiceUiVisible = IsVoiceUiVisible,
+            RestoreFocusedLayoutOnFocusLoss = restoreFocusedLayout,
+            Trace = TraceAction,
         };
+        TraceAction(restoreFocusedLayout ? "startup-focused-restore-on" : "startup-focused-restore-off");
+        Trace.Flush();
 
         nint hInstance = GetModuleHandleW(null);
         var wndClass = new WNDCLASSW
@@ -216,10 +260,16 @@ sealed partial class Program
                 "Voice Typing Toggle", 0x10);
             return 1;
         }
+        _ = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
         _ = SetTimer(hwnd, TimerId, FocusWatchIntervalMs, 0);
 
         // Best-effort restore if the process exits while dictating.
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => Core.RestoreIfDictating();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            TraceAction("process-exit");
+            Core.RestoreIfDictating();
+            Trace.Dispose();
+        };
 
         while (GetMessageW(out MSG msg, 0, 0, 0) > 0)
         {
@@ -234,13 +284,18 @@ sealed partial class Program
         switch (msg)
         {
             case WmHotkey when wParam == HotkeyId:
+                TraceAction("hotkey");
                 Core.Toggle();
+                Trace.Flush();
                 return 0;
             case WmTimer when wParam == TimerId:
                 Core.CheckDictationFocus();
+                Trace.Flush();
                 return 0;
             case WmQueryEndSession:
+                TraceAction("query-end-session");
                 Core.RestoreIfDictating();
+                Trace.Flush();
                 return 1; // allow shutdown
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -275,14 +330,20 @@ sealed partial class Program
         {
             _ = AttachThreadInput(self, attachTo, false);
         }
+        TraceAction(ok ? "restore-focus-ok" : "restore-focus-failed");
         return ok;
     }
 
-    static bool RequestLayout(nint hwnd, nint hkl) =>
-        SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
+    static bool RequestLayout(nint hwnd, nint hkl)
+    {
+        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
+        TraceAction(requested ? $"layout-request-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-failed-0x{hwnd:X}-0x{hkl:X}");
+        return requested;
+    }
 
     static void SendWinH()
     {
+        TraceAction("winh-begin");
         // Empirically verified recipe: left-Win injection is ignored by the shell;
         // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
         SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
@@ -290,12 +351,14 @@ sealed partial class Program
         SendKey(0, 0x23, up: false, useScanCode: true);
         SendKey(0, 0x23, up: true, useScanCode: true);
         SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+        TraceAction("winh-sent");
     }
 
     static void SendEscape()
     {
         SendKey(0, 0x01, up: false, useScanCode: true);
         SendKey(0, 0x01, up: true, useScanCode: true);
+        TraceAction("escape-sent");
     }
 
     static void SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
@@ -316,7 +379,92 @@ sealed partial class Program
         };
         if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
         {
+            TraceAction("send-input-failed");
             Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
+        }
+    }
+
+    // stop-flash watchdog: the Voice Typing "Listening..." pointer is a
+    // TextInputHost popup (class Xaml_WindowedPopupClass, title PopupHost). Its
+    // SHOW after a stop means the bar reopened; the core decides what to do.
+    static void OnVoiceUiEvent(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        if (hwnd == 0 || idObject != ObjidWindow || !IsVoiceUiWindow(hwnd))
+        {
+            return;
+        }
+        TraceAction($"popup-show-0x{hwnd:X}");
+        Core.OnVoiceUiShown();
+        Trace.Flush();
+    }
+
+    static void TraceAction(string eventName)
+    {
+        if (!Trace.Enabled)
+        {
+            return;
+        }
+        nint foreground = GetForegroundWindow();
+        uint foregroundTid = foreground != 0 ? GetWindowThreadProcessId(foreground, out _) : 0;
+        nint foregroundHkl = foregroundTid != 0 ? GetKeyboardLayout(foregroundTid) : 0;
+        Trace.Write(GetTickCount64(), eventName, foreground, foregroundTid, foregroundHkl,
+            Core.IsDictating, Core.WaitingForBar, Core.StopConfirmPending);
+    }
+
+    // stop-flash: the bar's launch confirmation also polls for this window.
+    static bool IsVoiceUiWindow(nint hwnd)
+    {
+        var cls = new char[256];
+        int clsLen = GetClassNameW(hwnd, cls, cls.Length);
+        if (clsLen <= 0 || new string(cls, 0, clsLen) != "Xaml_WindowedPopupClass")
+        {
+            return false;
+        }
+        var title = new char[256];
+        int titleLen = GetWindowTextW(hwnd, title, title.Length);
+        if (titleLen <= 0 || new string(title, 0, titleLen) != "PopupHost")
+        {
+            return false;
+        }
+        return IsTextInputHost(GetWindowThreadProcessId(hwnd, out _));
+    }
+
+    // stop-flash: bar-launch confirmation poll (timer-driven, non-blocking).
+    // EnumWindows sees hidden windows too, so the matcher is ANDed with
+    // IsWindowVisible — the reused TextInputHost popup must not count while hidden.
+    static bool IsVoiceUiVisible()
+    {
+        bool found = false;
+        _ = EnumWindows((h, _) =>
+        {
+            if (IsVoiceUiWindow(h) && IsWindowVisible(h))
+            {
+                found = true;
+                return false; // stop enumerating
+            }
+            return true;
+        }, 0);
+        return found;
+    }
+
+    static bool IsTextInputHost(uint pid)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById((int)pid);
+            return p.ProcessName == "TextInputHost";
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return false;
         }
     }
 }

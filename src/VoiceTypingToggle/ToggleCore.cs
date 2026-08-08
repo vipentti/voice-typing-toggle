@@ -6,10 +6,17 @@ internal sealed class ToggleCore
     const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
     const int SwitchTimeoutMs = 100; // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint LangEnUs = 0x0409;
-    const int EscapeRetryMs = 100;      // T7: Escape needs ~100 ms settle before the bar's close moves focus
+    const int EscapeRetryMs = 30;          // stop-flash: Escape settle; restore lands ~+31-47 ms (tuned; 20/15/10 reopen the bar), see .tmp/stop-flash-findings.md
+    const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
+    const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
+    const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
+    const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
     public bool IsDictating { get; private set; }
+    public bool StopConfirmPending { get; private set; } // watchdog: bar may have reopened after stop; corrective pass armed
+    public bool WaitingForBar { get; private set; }       // launch not yet confirmed: the bar has not shown after Win+H
+    public bool RestoreFocusedLayoutOnFocusLoss { get; set; }
     public nint SavedLayout { get; private set; }
     public nint SavedWindow { get; private set; }
 
@@ -20,7 +27,20 @@ internal sealed class ToggleCore
     public Action SendWinH { get; set; } = static () => { };
     public Action SendEscape { get; set; } = static () => { };
     public Func<nint, bool> RestoreFocus { get; set; } = static _ => false;
+    public Func<bool> IsVoiceUiVisible { get; set; } = static () => false; // stop-flash: bar window shown yet? (timer-confirmed launch)
     public Action<int> Sleep { get; set; } = static _ => { };
+    public Action<string> Trace { get; set; } = static _ => { };
+
+    // Watchdog state: the stop sequence may have raced the bar's variable
+    // teardown, letting it reopen and listen again; Program reports TextInputHost
+    // popup shows via OnVoiceUiShown while a stop is pending.
+    nint stopConfirmWindow;
+    nint stopConfirmLayout;
+    nint pendingRestoreWindow;
+    nint pendingRestoreLayout;
+    int stopConfirmCorrections;
+    int stopConfirmTicksLeft;
+    int barWaitTicksLeft;
 
     public ToggleCore(nint englishLayout) => EnglishLayout = englishLayout;
 
@@ -43,6 +63,13 @@ internal sealed class ToggleCore
 
     public void StartDictation(nint hwnd)
     {
+        // A background Chromium window can overwrite an apparently successful
+        // heal when its input context is recreated on focus. Complete that
+        // deferred restore before this window can become a new dictation target.
+        if (!CompletePendingRestore(hwnd))
+        {
+            return;
+        }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
@@ -55,53 +82,182 @@ internal sealed class ToggleCore
         SavedLayout = current;
         SavedWindow = hwnd;
         IsDictating = true;
+        StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
+        WaitingForBar = true;       // confirm the bar appeared via the 250 ms timer; never block the message loop
+        barWaitTicksLeft = BarWaitTimeoutTicks;
+        Trace("start-armed");
         SendWinH();
+        Trace("start-dispatched");
     }
 
     public void StopDictation()
     {
+        Trace("stop-begin");
+        ArmStopConfirm();
+        WaitingForBar = false;
+        RunStopSequence(corrective: false);
+        SavedLayout = 0;
+        SavedWindow = 0;
+        IsDictating = false;
+        Trace("stop-idle");
+    }
+
+    void ArmStopConfirm()
+    {
+        StopConfirmPending = true;
+        stopConfirmWindow = SavedWindow;
+        stopConfirmLayout = SavedLayout;
+        stopConfirmCorrections = StopConfirmMaxCorrections;
+        stopConfirmTicksLeft = StopConfirmTimeoutTicks;
+        Trace("watchdog-armed");
+    }
+
+    // The Escape/settle/retry/restore body shared by the normal stop and the
+    // watchdog's corrective passes. Uses the stopConfirm* snapshot so a later
+    // start cannot disturb a pending correction.
+    void RunStopSequence(bool corrective)
+    {
         SendEscape();
-        Sleep(EscapeRetryMs);
+        Sleep(corrective ? StopConfirmEscapeRetryMs : EscapeRetryMs);
         // Retry only if the bar is still there: when Escape #1 worked, the bar's close
         // moves foreground away from the saved window — a second Escape would then hit
         // whatever the shell raised (an unrelated app).
-        if (GetForeground() == SavedWindow)
+        if (GetForeground() == stopConfirmWindow)
         {
             SendEscape(); // apps like terminals consume the first Escape as a control char
         }
         // Do not wait for the bar-close foreground drop: RestoreFocus attaches to
         // whichever shell candidate appears and reclaims the saved window directly.
-        if (SavedWindow != 0)
+        if (stopConfirmWindow != 0)
         {
-            _ = RestoreFocus(SavedWindow);
+            _ = RestoreFocus(stopConfirmWindow);
         }
-        RestoreLayout(SavedWindow, SavedLayout);
-        SavedLayout = 0;
-        SavedWindow = 0;
-        IsDictating = false;
+        RestoreLayout(stopConfirmWindow, stopConfirmLayout);
+    }
+
+    // stop-flash watchdog: the bar reopened while our stop was pending.
+    // Re-close and re-restore (bounded); ignore shows once the pending window
+    // expires or a new dictation starts.
+    public void OnVoiceUiShown()
+    {
+        // Hard invariant: never correct while a dictation is active — the
+        // "Listening..." pointer re-shows mid-dictation on a ~5 s cadence and
+        // must not trigger Escapes.
+        if (!StopConfirmPending || IsDictating)
+        {
+            return;
+        }
+        if (stopConfirmCorrections-- <= 0)
+        {
+            StopConfirmPending = false;
+            Trace("watchdog-correction-limit");
+            return;
+        }
+        Trace("watchdog-corrective-begin");
+        RunStopSequence(corrective: true); // safe settle: a racy correction would just reopen the bar again
+        stopConfirmTicksLeft = StopConfirmTimeoutTicks; // fresh expiry window for any further reopen
     }
 
     // Self-healing: the Voice Typing bar auto-closes on any focus change, so once
     // focus leaves the dictation target the state is stale — restore and go Idle.
+    // Also confirms the bar launch (timer-based, non-blocking) and expires the
+    // stop-flash watchdog when no reopen appears in time.
     public void CheckDictationFocus()
     {
-        if (IsDictating && GetForeground() != SavedWindow)
+        bool healedFocusLoss = false;
+        nint foreground = GetForeground();
+        if (IsDictating && foreground != SavedWindow)
         {
-            RestoreIfDictating();
+            Trace("focus-loss");
+            RestoreIfDictating(foreground);
+            healedFocusLoss = true;
+        }
+        if (WaitingForBar)
+        {
+            if (IsVoiceUiVisible())
+            {
+                WaitingForBar = false; // launch confirmed: the bar is up
+                Trace("start-confirmed");
+            }
+            else if (--barWaitTicksLeft <= 0)
+            {
+                // The TextInputHost pointer is transient and does not appear for
+                // every successful Voice Typing launch. A missing observation
+                // cannot safely prove launch failure: restoring the layout here
+                // can restart an already-listening service in the saved language.
+                WaitingForBar = false;
+                Trace("start-unconfirmed");
+            }
+        }
+        if (StopConfirmPending && --stopConfirmTicksLeft <= 0)
+        {
+            StopConfirmPending = false;
+            Trace("watchdog-expired");
+        }
+        if (!healedFocusLoss && !IsDictating && pendingRestoreWindow != 0)
+        {
+            _ = CompletePendingRestore(GetForeground());
         }
     }
 
     public void RestoreIfDictating()
     {
+        RestoreIfDictating(GetForeground());
+    }
+
+    void RestoreIfDictating(nint foreground)
+    {
         if (!IsDictating)
         {
             return;
         }
-        nint target = SavedWindow != 0 ? SavedWindow : GetForeground();
-        RestoreLayout(target, SavedLayout);
+        bool wasWaitingForBar = WaitingForBar;
+        nint target = SavedWindow != 0 ? SavedWindow : foreground;
+        nint layout = SavedLayout;
+        RestoreLayout(target, layout);
+        if (RestoreFocusedLayoutOnFocusLoss && foreground != 0 && foreground != target)
+        {
+            uint foregroundTid = GetThreadId(foreground);
+            if (GetLayout(foregroundTid) == EnglishLayout)
+            {
+                RestoreLayout(foreground, layout);
+                Trace("focused-layout-restored");
+            }
+        }
+        // Reinforce the saved HKL when the original window next becomes
+        // foreground. This is intentionally deferred rather than stealing
+        // focus back from the app the user selected.
+        pendingRestoreWindow = target;
+        pendingRestoreLayout = layout;
+        WaitingForBar = false;
+        if (wasWaitingForBar)
+        {
+            // Launch race only: a bar that shows late must still be closed.
+            // During established dictation a focus change closes the bar itself;
+            // arming here would let the routine pointer re-show trigger Escapes.
+            ArmStopConfirm();
+        }
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
+        Trace("heal-idle");
+    }
+
+    bool CompletePendingRestore(nint foreground)
+    {
+        if (pendingRestoreWindow == 0 || foreground != pendingRestoreWindow)
+        {
+            return true;
+        }
+        if (!RestoreLayout(pendingRestoreWindow, pendingRestoreLayout))
+        {
+            Trace("pending-layout-restore-failed");
+            return false;
+        }
+        pendingRestoreWindow = 0;
+        pendingRestoreLayout = 0;
+        Trace("pending-layout-restored");
+        return true;
     }
 
     bool WaitForLayout(uint tid, nint expected, int timeoutMs)
@@ -118,23 +274,23 @@ internal sealed class ToggleCore
         return false;
     }
 
-    void RestoreLayout(nint target, nint expected)
+    bool RestoreLayout(nint target, nint expected)
     {
         if (target == 0 || expected == 0)
         {
-            return;
+            return false;
         }
         uint tid = GetThreadId(target);
         if (GetLayout(tid) == expected)
         {
-            return;
+            return true;
         }
         if (RequestLayout(target, expected) && WaitForLayout(tid, expected, SwitchTimeoutMs))
         {
-            return;
+            return true;
         }
         _ = RequestLayout(target, expected); // one retry for input-context reinitialization
-        _ = WaitForLayout(tid, expected, SwitchTimeoutMs);
+        return WaitForLayout(tid, expected, SwitchTimeoutMs);
     }
 
     // Pure selection logic: exact en-US first, then any English primary language.
