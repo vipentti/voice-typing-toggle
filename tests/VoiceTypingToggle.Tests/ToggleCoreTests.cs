@@ -357,6 +357,40 @@ public class ToggleCoreTests
     }
 
     [Fact]
+    public void OptInFocusHealRestoresTemporaryEnglishOnNewForegroundWindow()
+    {
+        const nint other = 0xABCD;
+        var layouts = new Dictionary<uint, nint> { [7] = EnGb, [8] = EnUs };
+        var requests = new List<(nint hwnd, nint hkl)>();
+        nint foreground = Target;
+        var core = new ToggleCore(EnUs)
+        {
+            RestoreFocusedLayoutOnFocusLoss = true,
+            GetForeground = () => foreground,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            SendWinH = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle();
+        foreground = other;
+        core.CheckDictationFocus();
+
+        Assert.False(core.IsDictating);
+        Assert.Equal(EnGb, layouts[7]);
+        Assert.Equal(EnGb, layouts[8]);
+        Assert.Equal([(Target, EnUs), (Target, EnGb), (other, EnGb)], requests);
+    }
+
+    [Fact]
     public void StopRetriesUnconfirmedLayoutRestoreOnce()
     {
         var (core, requests) = NewCore();

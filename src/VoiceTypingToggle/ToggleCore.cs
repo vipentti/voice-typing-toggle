@@ -16,6 +16,7 @@ internal sealed class ToggleCore
     public bool IsDictating { get; private set; }
     public bool StopConfirmPending { get; private set; } // watchdog: bar may have reopened after stop; corrective pass armed
     public bool WaitingForBar { get; private set; }       // launch not yet confirmed: the bar has not shown after Win+H
+    public bool RestoreFocusedLayoutOnFocusLoss { get; set; }
     public nint SavedLayout { get; private set; }
     public nint SavedWindow { get; private set; }
 
@@ -156,9 +157,10 @@ internal sealed class ToggleCore
     public void CheckDictationFocus()
     {
         bool healedFocusLoss = false;
-        if (IsDictating && GetForeground() != SavedWindow)
+        nint foreground = GetForeground();
+        if (IsDictating && foreground != SavedWindow)
         {
-            RestoreIfDictating();
+            RestoreIfDictating(foreground);
             healedFocusLoss = true;
         }
         if (WaitingForBar)
@@ -188,14 +190,27 @@ internal sealed class ToggleCore
 
     public void RestoreIfDictating()
     {
+        RestoreIfDictating(GetForeground());
+    }
+
+    void RestoreIfDictating(nint foreground)
+    {
         if (!IsDictating)
         {
             return;
         }
         bool wasWaitingForBar = WaitingForBar;
-        nint target = SavedWindow != 0 ? SavedWindow : GetForeground();
+        nint target = SavedWindow != 0 ? SavedWindow : foreground;
         nint layout = SavedLayout;
         RestoreLayout(target, layout);
+        if (RestoreFocusedLayoutOnFocusLoss && foreground != 0 && foreground != target)
+        {
+            uint foregroundTid = GetThreadId(foreground);
+            if (GetLayout(foregroundTid) == EnglishLayout)
+            {
+                RestoreLayout(foreground, layout);
+            }
+        }
         // Reinforce the saved HKL when the original window next becomes
         // foreground. This is intentionally deferred rather than stealing
         // focus back from the app the user selected.

@@ -199,6 +199,8 @@ sealed partial class Program
 
     static int Main()
     {
+        bool restoreFocusedLayout = Environment.GetEnvironmentVariable("VTT_RESTORE_FOCUSED_LAYOUT") == "1";
+
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
         nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count) : 0;
@@ -220,6 +222,7 @@ sealed partial class Program
             RestoreFocus = RestoreFocus,
             Sleep = Thread.Sleep,
             IsVoiceUiVisible = IsVoiceUiVisible,
+            RestoreFocusedLayoutOnFocusLoss = restoreFocusedLayout,
         };
 
         nint hInstance = GetModuleHandleW(null);
