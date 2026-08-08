@@ -1,8 +1,8 @@
 # Tasks: Voice Typing Toggle MVP (v0.1)
 
 - [x] T1 Confirm that an unsigned Native AOT hello-world executable runs on the machine where the utility will be used, and record the result
-- [ ] T2 Confirm which English keyboard layouts are installed there via `GetKeyboardLayoutList` or the language bar, and record whether `en-US` is among them
-- [ ] T3 Create the solution and a `net10.0-windows` console project at `src/VoiceTypingToggle` that prints the foreground window's thread id and current `HKL`, verified against a browser, a terminal, and an Office/Teams-class application
+- [x] T2 Confirm which English keyboard layouts are installed there via `GetKeyboardLayoutList` or the language bar, and record whether `en-US` is among them
+- [x] T3 Create the solution and a `net10.0-windows` console project at `src/VoiceTypingToggle` that prints the foreground window's thread id and current `HKL`, verified against a browser, a terminal, and an Office/Teams-class application
 - [ ] T4 Extend the console app to select an English layout from the installed list, request the switch via `WM_INPUTLANGCHANGEREQUEST`, poll until the foreground thread reports it, and print elapsed milliseconds and outcome per application
 - [ ] T5 Set the poll interval and timeout constants from the measured data, and record which applications honored the switch and how long it took
 - [ ] T6 Extend the console app to send `Win+H` via `SendInput` after a confirmed switch, verifying Windows Voice Typing opens
@@ -15,3 +15,4 @@
 ## Verification Evidence
 
 - Gate T1: unsigned Native AOT `VoiceTypingToggle.exe` built from the planned project, ran on the machine where the utility will be used, printed its gate message, and exited 0 (2026-08-08).
+- Gate T2: language bar shows installed English layouts en-US (0409:0000040B) and en-GB (0809:0000040B); en-US present (2026-08-08).
