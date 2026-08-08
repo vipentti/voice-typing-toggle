@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - name: Build
+        run: dotnet build VoiceTypingToggle.slnx
+      - name: Test
+        run: dotnet test VoiceTypingToggle.slnx
+      - name: Publish (Native AOT)
+        run: dotnet publish src\VoiceTypingToggle\VoiceTypingToggle.csproj -c Release
