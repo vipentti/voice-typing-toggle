@@ -44,12 +44,13 @@ public class ToggleCoreTests
     static (ToggleCore Core, List<(nint hwnd, nint hkl)> Requests) NewCore()
     {
         var requests = new List<(nint hwnd, nint hkl)>();
+        nint layout = EnGb;
         var core = new ToggleCore(EnUs)
         {
             GetForeground = () => Target,
             GetThreadId = _ => 7,
-            GetLayout = _ => requests.Count > 0 ? EnUs : EnGb,
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); return true; },
+            GetLayout = _ => layout,
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -92,10 +93,20 @@ public class ToggleCoreTests
         var (core, requests) = NewCore();
         int escapes = 0;
         nint? focusTarget = null;
+        var restoreOrder = new List<string>();
+        var requestLayout = core.RequestLayout;
+        core.RequestLayout = (h, hkl) =>
+        {
+            if (hkl == EnGb)
+            {
+                restoreOrder.Add("layout");
+            }
+            return requestLayout(h, hkl);
+        };
         var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, escape-retry check, then bar-close drop to 0
         core.GetForeground = () => fg.Dequeue();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusTarget = h; return true; };
+        core.RestoreFocus = h => { restoreOrder.Add("focus"); focusTarget = h; return true; };
 
         core.Toggle(); // start
         core.Toggle(); // stop
@@ -104,6 +115,7 @@ public class ToggleCoreTests
         Assert.Equal(0, core.SavedLayout);
         Assert.Equal(2, escapes); // first close + retry while the bar was still there
         Assert.Equal(Target, focusTarget);
+        Assert.Equal(["focus", "layout"], restoreOrder);
         Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // switch up, restore down
     }
 
@@ -123,5 +135,32 @@ public class ToggleCoreTests
         Assert.False(core.IsDictating);
         Assert.Equal(0, core.SavedLayout);
         Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // healed: layout restored
+    }
+
+    [Fact]
+    public void StopRetriesUnconfirmedLayoutRestoreOnce()
+    {
+        var (core, requests) = NewCore();
+        nint layout = EnGb;
+        int restoreAttempts = 0;
+        core.GetLayout = _ => layout;
+        core.RequestLayout = (h, hkl) =>
+        {
+            requests.Add((h, hkl));
+            if (hkl == EnUs || ++restoreAttempts == 2)
+            {
+                layout = hkl;
+            }
+            return true;
+        };
+        var fg = new Queue<nint>([Target, Target, Target, 0]);
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle();
+        core.Toggle();
+
+        Assert.Equal(2, restoreAttempts);
+        Assert.Equal([(Target, EnUs), (Target, EnGb), (Target, EnGb)], requests);
+        Assert.Equal(EnGb, layout);
     }
 }

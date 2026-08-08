@@ -7,7 +7,6 @@ internal sealed class ToggleCore
     const int SwitchTimeoutMs = 100; // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint LangEnUs = 0x0409;
     const int EscapeRetryMs = 100;      // T7: Escape needs ~100 ms settle before the bar's close moves focus
-    const int ForegroundSettleMs = 300; // T8: bar close drops foreground to 0; claim the saved window right then
 
     public nint EnglishLayout { get; }
     public bool IsDictating { get; private set; }
@@ -70,25 +69,13 @@ internal sealed class ToggleCore
         {
             SendEscape(); // apps like terminals consume the first Escape as a control char
         }
-        // The bar close drops foreground (often to 0 momentarily); claim the saved
-        // window right then, before the shell raises its own candidate (Start, MRU).
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < ForegroundSettleMs && GetForeground() != 0)
-        {
-            Sleep(10);
-        }
+        // Do not wait for the bar-close foreground drop: RestoreFocus attaches to
+        // whichever shell candidate appears and reclaims the saved window directly.
         if (SavedWindow != 0)
         {
-            _ = RestoreFocus(SavedWindow); // restore focus first, then layout: shortest visible blip
+            _ = RestoreFocus(SavedWindow);
         }
-        if (SavedLayout != 0)
-        {
-            uint tid = GetThreadId(SavedWindow);
-            if (GetLayout(tid) != SavedLayout)
-            {
-                _ = RequestLayout(SavedWindow, SavedLayout);
-            }
-        }
+        RestoreLayout(SavedWindow, SavedLayout);
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
@@ -111,10 +98,7 @@ internal sealed class ToggleCore
             return;
         }
         nint target = SavedWindow != 0 ? SavedWindow : GetForeground();
-        if (target != 0 && SavedLayout != 0)
-        {
-            _ = RequestLayout(target, SavedLayout);
-        }
+        RestoreLayout(target, SavedLayout);
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
@@ -132,6 +116,25 @@ internal sealed class ToggleCore
             Sleep(PollIntervalMs);
         }
         return false;
+    }
+
+    void RestoreLayout(nint target, nint expected)
+    {
+        if (target == 0 || expected == 0)
+        {
+            return;
+        }
+        uint tid = GetThreadId(target);
+        if (GetLayout(tid) == expected)
+        {
+            return;
+        }
+        if (RequestLayout(target, expected) && WaitForLayout(tid, expected, SwitchTimeoutMs))
+        {
+            return;
+        }
+        _ = RequestLayout(target, expected); // one retry for input-context reinitialization
+        _ = WaitForLayout(tid, expected, SwitchTimeoutMs);
     }
 
     // Pure selection logic: exact en-US first, then any English primary language.
