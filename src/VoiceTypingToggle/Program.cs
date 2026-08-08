@@ -8,8 +8,8 @@ using System.Runtime.InteropServices;
 // the desktop in its original language. Ctrl+C to exit.
 partial class Program
 {
-    const int PollIntervalMs = 10;   // placeholder until T5 sets from measured data
-    const int SwitchTimeoutMs = 250; // placeholder until T5 sets from measured data
+    const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
+    const int SwitchTimeoutMs = 100;  // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint WmInputLangChangeRequest = 0x0050;
     const uint SmtoAbortIfHung = 0x0002;
     const uint LangEnUs = 0x0409;
@@ -30,10 +30,49 @@ partial class Program
     private static partial nint SendMessageTimeout(
         nint hWnd, uint msg, nint wParam, nint lParam, uint flags, uint timeout, out nint result);
 
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial uint SendInput(uint cInputs, INPUT[] pInputs, int cbSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx, dy;
+        public uint mouseData, dwFlags, time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk, wScan;
+        public uint dwFlags, time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion u;
+    }
+
+    const uint InputKeyboard = 1;
+    const uint KeyeventfExtendedKey = 0x0001;
+    const uint KeyeventfKeyUp = 0x0002;
+    const uint KeyeventfScanCode = 0x0008;
+    const ushort VK_RWIN = 0x5C;
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int GetWindowText(nint hWnd, char[] text, int maxCount);
 
-    static void Main()
+    static void Main(string[] args)
     {
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
@@ -75,6 +114,11 @@ partial class Program
                     if (ms >= 0)
                     {
                         Console.WriteLine($"  -> english 0x{english:X8} in {ms} ms");
+                        SendWinH();
+                        Console.WriteLine("  voice typing start sent (Win+H)");
+                        Thread.Sleep(3000); // keep Voice Typing open so it can be seen
+                        SendWinH();
+                        Console.WriteLine("  voice typing stop sent (Win+H)");
                         if (RequestLayout(hwnd, hkl))
                         {
                             int rms = WaitForLayout(tid, hkl, SwitchTimeoutMs);
@@ -122,6 +166,39 @@ partial class Program
 
     static bool RequestLayout(nint hwnd, nint hkl) =>
         SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
+
+    static void SendWinH()
+    {
+        // Empirically verified recipe: left-Win injection is ignored by the shell;
+        // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
+        SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
+        Thread.Sleep(500);
+        SendKey(0, 0x23, up: false, useScanCode: true);
+        SendKey(0, 0x23, up: true, useScanCode: true);
+        SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+    }
+
+    static void SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
+    {
+        uint flags = (up ? KeyeventfKeyUp : 0) | (extended ? KeyeventfExtendedKey : 0) | (useScanCode ? KeyeventfScanCode : 0);
+        var input = new INPUT
+        {
+            type = InputKeyboard,
+            u = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = useScanCode ? (ushort)0 : vk,
+                    wScan = scan,
+                    dwFlags = flags,
+                },
+            },
+        };
+        if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
+        {
+            Console.WriteLine($"  error: SendInput failed (Win32 {Marshal.GetLastPInvokeError()})");
+        }
+    }
 
     static int WaitForLayout(uint tid, nint expected, int timeoutMs)
     {
