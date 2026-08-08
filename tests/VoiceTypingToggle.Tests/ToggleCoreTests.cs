@@ -268,7 +268,7 @@ public class ToggleCoreTests
     }
 
     [Fact]
-    public void StartFailsClosedWhenBarNeverAppears()
+    public void StartRemainsDictatingWhenTransientPopupNeverAppears()
     {
         var (core, requests) = NewCore();
         core.IsVoiceUiVisible = () => false; // bar never shows
@@ -280,12 +280,12 @@ public class ToggleCoreTests
             core.CheckDictationFocus();
         }
 
-        Assert.False(core.IsDictating);
+        Assert.True(core.IsDictating);
         Assert.False(core.WaitingForBar);
-        Assert.Equal(0, core.SavedWindow);
-        Assert.Equal(0, core.SavedLayout);
-        Assert.True(core.StopConfirmPending); // watchdog armed for a very late bar
-        Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // switch up, restore down
+        Assert.Equal(Target, core.SavedWindow);
+        Assert.Equal(EnGb, core.SavedLayout);
+        Assert.False(core.StopConfirmPending);
+        Assert.Equal([(Target, EnUs)], requests); // keep English active until an explicit stop/heal
     }
 
     [Fact]
@@ -323,6 +323,37 @@ public class ToggleCoreTests
         Assert.False(core.IsDictating);
         Assert.Equal(0, core.SavedLayout);
         Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // healed: layout restored
+    }
+
+    [Fact]
+    public void FocusHealReappliesSavedLayoutWhenOriginalWindowReturns()
+    {
+        var requests = new List<(nint hwnd, nint hkl)>();
+        nint layout = EnGb;
+        nint foreground = Target;
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => foreground,
+            GetThreadId = _ => 7,
+            GetLayout = _ => layout,
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
+            SendWinH = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle(); // start on Target: en-GB -> en-US
+        foreground = 0xABCD;
+        core.CheckDictationFocus(); // heal sends a best-effort restore to the background Target
+        Assert.False(core.IsDictating);
+        Assert.Equal(EnGb, layout);
+
+        layout = EnUs; // model VS Code reinitializing its input context on refocus
+        foreground = Target;
+        core.CheckDictationFocus();
+
+        Assert.Equal(EnGb, layout);
+        Assert.Equal([(Target, EnUs), (Target, EnGb), (Target, EnGb)], requests);
     }
 
     [Fact]

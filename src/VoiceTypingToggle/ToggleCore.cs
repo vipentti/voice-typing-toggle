@@ -10,7 +10,7 @@ internal sealed class ToggleCore
     const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
     const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
     const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
-    const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: bound for the bar to appear after Win+H
+    const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
     public bool IsDictating { get; private set; }
@@ -34,6 +34,8 @@ internal sealed class ToggleCore
     // popup shows via OnVoiceUiShown while a stop is pending.
     nint stopConfirmWindow;
     nint stopConfirmLayout;
+    nint pendingRestoreWindow;
+    nint pendingRestoreLayout;
     int stopConfirmCorrections;
     int stopConfirmTicksLeft;
     int barWaitTicksLeft;
@@ -59,6 +61,13 @@ internal sealed class ToggleCore
 
     public void StartDictation(nint hwnd)
     {
+        // A background Chromium window can overwrite an apparently successful
+        // heal when its input context is recreated on focus. Complete that
+        // deferred restore before this window can become a new dictation target.
+        if (!CompletePendingRestore(hwnd))
+        {
+            return;
+        }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
@@ -146,9 +155,11 @@ internal sealed class ToggleCore
     // stop-flash watchdog when no reopen appears in time.
     public void CheckDictationFocus()
     {
+        bool healedFocusLoss = false;
         if (IsDictating && GetForeground() != SavedWindow)
         {
             RestoreIfDictating();
+            healedFocusLoss = true;
         }
         if (WaitingForBar)
         {
@@ -158,23 +169,21 @@ internal sealed class ToggleCore
             }
             else if (--barWaitTicksLeft <= 0)
             {
-                AbortStart(); // no bar in time: fail closed, watchdog catches a very late one
+                // The TextInputHost pointer is transient and does not appear for
+                // every successful Voice Typing launch. A missing observation
+                // cannot safely prove launch failure: restoring the layout here
+                // can restart an already-listening service in the saved language.
+                WaitingForBar = false;
             }
         }
         if (StopConfirmPending && --stopConfirmTicksLeft <= 0)
         {
             StopConfirmPending = false;
         }
-    }
-
-    void AbortStart()
-    {
-        WaitingForBar = false;
-        RestoreLayout(SavedWindow, SavedLayout);
-        ArmStopConfirm();
-        SavedLayout = 0;
-        SavedWindow = 0;
-        IsDictating = false;
+        if (!healedFocusLoss && !IsDictating && pendingRestoreWindow != 0)
+        {
+            _ = CompletePendingRestore(GetForeground());
+        }
     }
 
     public void RestoreIfDictating()
@@ -185,7 +194,13 @@ internal sealed class ToggleCore
         }
         bool wasWaitingForBar = WaitingForBar;
         nint target = SavedWindow != 0 ? SavedWindow : GetForeground();
-        RestoreLayout(target, SavedLayout);
+        nint layout = SavedLayout;
+        RestoreLayout(target, layout);
+        // Reinforce the saved HKL when the original window next becomes
+        // foreground. This is intentionally deferred rather than stealing
+        // focus back from the app the user selected.
+        pendingRestoreWindow = target;
+        pendingRestoreLayout = layout;
         WaitingForBar = false;
         if (wasWaitingForBar)
         {
@@ -197,6 +212,21 @@ internal sealed class ToggleCore
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
+    }
+
+    bool CompletePendingRestore(nint foreground)
+    {
+        if (pendingRestoreWindow == 0 || foreground != pendingRestoreWindow)
+        {
+            return true;
+        }
+        if (!RestoreLayout(pendingRestoreWindow, pendingRestoreLayout))
+        {
+            return false;
+        }
+        pendingRestoreWindow = 0;
+        pendingRestoreLayout = 0;
+        return true;
     }
 
     bool WaitForLayout(uint tid, nint expected, int timeoutMs)
@@ -213,23 +243,23 @@ internal sealed class ToggleCore
         return false;
     }
 
-    void RestoreLayout(nint target, nint expected)
+    bool RestoreLayout(nint target, nint expected)
     {
         if (target == 0 || expected == 0)
         {
-            return;
+            return false;
         }
         uint tid = GetThreadId(target);
         if (GetLayout(tid) == expected)
         {
-            return;
+            return true;
         }
         if (RequestLayout(target, expected) && WaitForLayout(tid, expected, SwitchTimeoutMs))
         {
-            return;
+            return true;
         }
         _ = RequestLayout(target, expected); // one retry for input-context reinitialization
-        _ = WaitForLayout(tid, expected, SwitchTimeoutMs);
+        return WaitForLayout(tid, expected, SwitchTimeoutMs);
     }
 
     // Pure selection logic: exact en-US first, then any English primary language.
