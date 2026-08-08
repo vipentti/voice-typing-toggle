@@ -9,6 +9,12 @@
          the code itself contains no unsafe blocks. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VoiceTypingToggle.Tests" />
+  </ItemGroup>
 
 </Project>

@@ -5,11 +5,8 @@ using System.Runtime.InteropServices;
 //   Dictating -> Win+H (closes), restore saved layout to foreground at that time
 sealed partial class Program
 {
-    const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
-    const int SwitchTimeoutMs = 100;  // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint WmInputLangChangeRequest = 0x0050;
     const uint SmtoAbortIfHung = 0x0002;
-    const uint LangEnUs = 0x0409;
     const uint WmHotkey = 0x0312;
     const uint WmTimer = 0x0113;
     const uint WmQueryEndSession = 0x0011;
@@ -167,21 +164,31 @@ sealed partial class Program
     private static readonly WndProc WndProcDelegate = WindowProc; // keep GC root for the lifetime of the class
     private const uint InputKeyboard = 1;
 
-    private static nint _englishLayout;
-    private static nint _savedLayout;
-    private static nint _savedWindow;
-    private static bool _dictating;
+    private static ToggleCore Core = null!;
 
     static int Main()
     {
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
-        if (count <= 0 || (nint)(_englishLayout = SelectEnglishLayout(layouts, count)) == 0)
+        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count) : 0;
+        if (englishLayout == 0)
         {
             MessageBoxW(0, "No English keyboard layout is installed. Voice Typing Toggle cannot start.",
                 "Voice Typing Toggle", 0x10 /* MB_ICONERROR */);
             return 1;
         }
+
+        Core = new ToggleCore(englishLayout)
+        {
+            GetForeground = GetForegroundWindow,
+            GetThreadId = h => GetWindowThreadProcessId(h, out _),
+            GetLayout = GetKeyboardLayout,
+            RequestLayout = RequestLayout,
+            SendWinH = SendWinH,
+            SendEscape = SendEscape,
+            RestoreFocus = RestoreFocus,
+            Sleep = Thread.Sleep,
+        };
 
         nint hInstance = GetModuleHandleW(null);
         var wndClass = new WNDCLASSW
@@ -212,7 +219,7 @@ sealed partial class Program
         _ = SetTimer(hwnd, TimerId, FocusWatchIntervalMs, 0);
 
         // Best-effort restore if the process exits while dictating.
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => RestoreIfDictating();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Core.RestoreIfDictating();
 
         while (GetMessageW(out MSG msg, 0, 0, 0) > 0)
         {
@@ -227,114 +234,16 @@ sealed partial class Program
         switch (msg)
         {
             case WmHotkey when wParam == HotkeyId:
-                Toggle();
+                Core.Toggle();
                 return 0;
             case WmTimer when wParam == TimerId:
-                CheckDictationFocus();
+                Core.CheckDictationFocus();
                 return 0;
             case WmQueryEndSession:
-                RestoreIfDictating();
+                Core.RestoreIfDictating();
                 return 1; // allow shutdown
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
-    }
-
-    // Self-healing state: the Voice Typing bar auto-closes on any focus change,
-    // so once focus leaves the dictation target the state is stale — restore the
-    // saved layout and go Idle. The next hotkey press then starts fresh.
-    static void CheckDictationFocus()
-    {
-        if (_dictating && GetForegroundWindow() != _savedWindow)
-        {
-            RestoreIfDictating();
-        }
-    }
-
-    static void Toggle()
-    {
-        nint hwnd = GetForegroundWindow();
-        if (hwnd == 0)
-        {
-            return;
-        }
-        if (!_dictating)
-        {
-            StartDictation(hwnd);
-        }
-        else
-        {
-            StopDictation();
-        }
-    }
-
-    static void StartDictation(nint hwnd)
-    {
-        uint tid = GetWindowThreadProcessId(hwnd, out _);
-        nint current = GetKeyboardLayout(tid);
-
-        // Fail closed: only start voice typing after the English layout is confirmed active.
-        if (current != _englishLayout)
-        {
-            if (!RequestLayout(hwnd, _englishLayout) || !WaitForLayout(tid, _englishLayout, SwitchTimeoutMs))
-            {
-                return; // stay Idle
-            }
-        }
-        _savedLayout = current;
-        _savedWindow = hwnd;
-        _dictating = true;
-        SendWinH();
-    }
-
-    static void StopDictation()
-    {
-        SendEscape();
-        Thread.Sleep(100);
-        // Retry only if the bar is still there: when Escape #1 worked, the bar's close
-        // moves foreground away from the saved window — a second Escape would then hit
-        // whatever the shell raised (an unrelated app).
-        if (GetForegroundWindow() == _savedWindow)
-        {
-            SendEscape(); // apps like terminals consume the first Escape as a control char
-        }
-        // The bar close drops foreground (often to 0 momentarily); claim the saved
-        // window right then, before the shell raises its own candidate (Start, MRU).
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < 300 && GetForegroundWindow() != 0)
-        {
-            Thread.Sleep(10);
-        }
-        if (_savedWindow != 0)
-        {
-            _ = RestoreFocus(_savedWindow); // restore focus first, then layout: shortest visible blip
-        }
-        if (_savedLayout != 0)
-        {
-            uint tid = GetWindowThreadProcessId(_savedWindow, out _);
-            if (GetKeyboardLayout(tid) != _savedLayout)
-            {
-                _ = RequestLayout(_savedWindow, _savedLayout);
-            }
-        }
-        _savedLayout = 0;
-        _savedWindow = 0;
-        _dictating = false;
-    }
-
-    static void RestoreIfDictating()
-    {
-        if (!_dictating)
-        {
-            return;
-        }
-        nint target = _savedWindow != 0 ? _savedWindow : GetForegroundWindow();
-        if (target != 0 && _savedLayout != 0)
-        {
-            _ = RequestLayout(target, _savedLayout);
-        }
-        _savedLayout = 0;
-        _savedWindow = 0;
-        _dictating = false;
     }
 
     // A background process cannot normally take foreground; attaching our input
@@ -369,41 +278,8 @@ sealed partial class Program
         return ok;
     }
 
-    // Pure selection logic: exact en-US first, then any English primary language.
-    static nint SelectEnglishLayout(nint[] layouts, int count)
-    {
-        nint fallback = 0;
-        for (int i = 0; i < count; i++)
-        {
-            uint lang = (uint)layouts[i] & 0xFFFF;
-            if (lang == LangEnUs)
-            {
-                return layouts[i];
-            }
-            if ((lang & 0xFF) == 0x09 && fallback == 0)
-            {
-                fallback = layouts[i];
-            }
-        }
-        return fallback;
-    }
-
     static bool RequestLayout(nint hwnd, nint hkl) =>
         SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
-
-    static bool WaitForLayout(uint tid, nint expected, int timeoutMs)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < timeoutMs)
-        {
-            if (GetKeyboardLayout(tid) == expected)
-            {
-                return true;
-            }
-            Thread.Sleep(PollIntervalMs);
-        }
-        return false;
-    }
 
     static void SendWinH()
     {
@@ -440,7 +316,7 @@ sealed partial class Program
         };
         if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
         {
-            RestoreIfDictating(); // T8: SendInput failure restores immediately
+            Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
         }
     }
 }

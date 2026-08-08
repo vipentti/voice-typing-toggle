@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/VoiceTypingToggle/VoiceTypingToggle.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VoiceTypingToggle.Tests/VoiceTypingToggle.Tests.csproj" />
+  </Folder>
 </Solution>
