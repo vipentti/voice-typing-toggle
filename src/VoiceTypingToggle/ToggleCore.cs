@@ -29,6 +29,7 @@ internal sealed class ToggleCore
     public Func<nint, bool> RestoreFocus { get; set; } = static _ => false;
     public Func<bool> IsVoiceUiVisible { get; set; } = static () => false; // stop-flash: bar window shown yet? (timer-confirmed launch)
     public Action<int> Sleep { get; set; } = static _ => { };
+    public Action<string> Trace { get; set; } = static _ => { };
 
     // Watchdog state: the stop sequence may have raced the bar's variable
     // teardown, letting it reopen and listen again; Program reports TextInputHost
@@ -84,17 +85,21 @@ internal sealed class ToggleCore
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
         WaitingForBar = true;       // confirm the bar appeared via the 250 ms timer; never block the message loop
         barWaitTicksLeft = BarWaitTimeoutTicks;
+        Trace("start-armed");
         SendWinH();
+        Trace("start-dispatched");
     }
 
     public void StopDictation()
     {
+        Trace("stop-begin");
         ArmStopConfirm();
         WaitingForBar = false;
         RunStopSequence(corrective: false);
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
+        Trace("stop-idle");
     }
 
     void ArmStopConfirm()
@@ -104,6 +109,7 @@ internal sealed class ToggleCore
         stopConfirmLayout = SavedLayout;
         stopConfirmCorrections = StopConfirmMaxCorrections;
         stopConfirmTicksLeft = StopConfirmTimeoutTicks;
+        Trace("watchdog-armed");
     }
 
     // The Escape/settle/retry/restore body shared by the normal stop and the
@@ -144,8 +150,10 @@ internal sealed class ToggleCore
         if (stopConfirmCorrections-- <= 0)
         {
             StopConfirmPending = false;
+            Trace("watchdog-correction-limit");
             return;
         }
+        Trace("watchdog-corrective-begin");
         RunStopSequence(corrective: true); // safe settle: a racy correction would just reopen the bar again
         stopConfirmTicksLeft = StopConfirmTimeoutTicks; // fresh expiry window for any further reopen
     }
@@ -160,6 +168,7 @@ internal sealed class ToggleCore
         nint foreground = GetForeground();
         if (IsDictating && foreground != SavedWindow)
         {
+            Trace("focus-loss");
             RestoreIfDictating(foreground);
             healedFocusLoss = true;
         }
@@ -168,6 +177,7 @@ internal sealed class ToggleCore
             if (IsVoiceUiVisible())
             {
                 WaitingForBar = false; // launch confirmed: the bar is up
+                Trace("start-confirmed");
             }
             else if (--barWaitTicksLeft <= 0)
             {
@@ -176,11 +186,13 @@ internal sealed class ToggleCore
                 // cannot safely prove launch failure: restoring the layout here
                 // can restart an already-listening service in the saved language.
                 WaitingForBar = false;
+                Trace("start-unconfirmed");
             }
         }
         if (StopConfirmPending && --stopConfirmTicksLeft <= 0)
         {
             StopConfirmPending = false;
+            Trace("watchdog-expired");
         }
         if (!healedFocusLoss && !IsDictating && pendingRestoreWindow != 0)
         {
@@ -209,6 +221,7 @@ internal sealed class ToggleCore
             if (GetLayout(foregroundTid) == EnglishLayout)
             {
                 RestoreLayout(foreground, layout);
+                Trace("focused-layout-restored");
             }
         }
         // Reinforce the saved HKL when the original window next becomes
@@ -227,6 +240,7 @@ internal sealed class ToggleCore
         SavedLayout = 0;
         SavedWindow = 0;
         IsDictating = false;
+        Trace("heal-idle");
     }
 
     bool CompletePendingRestore(nint foreground)
@@ -237,10 +251,12 @@ internal sealed class ToggleCore
         }
         if (!RestoreLayout(pendingRestoreWindow, pendingRestoreLayout))
         {
+            Trace("pending-layout-restore-failed");
             return false;
         }
         pendingRestoreWindow = 0;
         pendingRestoreLayout = 0;
+        Trace("pending-layout-restored");
         return true;
     }
 

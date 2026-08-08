@@ -3,6 +3,62 @@
 
 namespace VoiceTypingToggle.Tests;
 
+public class DiagnosticTraceTests
+{
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("0")]
+    public void DisabledSettingsHaveNoTracePath(string? setting)
+    {
+        Assert.Null(DiagnosticTrace.ResolvePath(setting, Path.GetTempPath()));
+    }
+
+    [Fact]
+    public void OneUsesTheLocalAppDataTracePath()
+    {
+        string localAppData = Path.Combine(Path.GetTempPath(), "local-app-data");
+
+        string? path = DiagnosticTrace.ResolvePath("1", localAppData);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(localAppData, "VoiceTypingToggle", "trace.csv")), path);
+    }
+
+    [Fact]
+    public void ExplicitTracePathIsPreservedAsAnAbsolutePath()
+    {
+        string requested = Path.Combine(Path.GetTempPath(), "custom-vtt-trace.csv");
+
+        string? path = DiagnosticTrace.ResolvePath(requested, Path.GetTempPath());
+
+        Assert.Equal(Path.GetFullPath(requested), path);
+    }
+
+    [Fact]
+    public void EnabledTraceWritesHeaderAndMetadataRow()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"vtt-trace-{Guid.NewGuid():N}.csv");
+        try
+        {
+            using (DiagnosticTrace trace = DiagnosticTrace.Create(path, Path.GetTempPath()))
+            {
+                Assert.True(trace.Enabled);
+                trace.Write(123, "test-event", 0x1234, 7, 0x040B040B, true, false, true);
+                trace.Flush();
+            }
+
+            string[] lines = File.ReadAllLines(path);
+            Assert.Equal(2, lines.Length);
+            Assert.Equal("tick,event,foreground,foregroundTid,foregroundHkl,isDictating,waitingForBar,stopConfirmPending", lines[0]);
+            Assert.Equal("123,test-event,0x1234,7,0x40B040B,True,False,True", lines[1]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+}
+
 public class SelectEnglishLayoutTests
 {
     const nint EnUs = 0x040B0409; // en-US language id, Finnish physical keyboard klid (as on this machine)

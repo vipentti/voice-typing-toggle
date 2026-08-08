@@ -124,6 +124,10 @@ sealed partial class Program
     private static partial uint GetCurrentThreadId();
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("kernel32.dll")]
+    private static partial ulong GetTickCount64();
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint GetModuleHandleW(string? lpModuleName);
 
@@ -196,9 +200,11 @@ sealed partial class Program
     private const uint InputKeyboard = 1;
 
     private static ToggleCore Core = null!;
+    private static DiagnosticTrace Trace = DiagnosticTrace.Disabled;
 
     static int Main()
     {
+        Trace = DiagnosticTrace.CreateFromEnvironment();
         bool restoreFocusedLayout = Environment.GetEnvironmentVariable("VTT_RESTORE_FOCUSED_LAYOUT") == "1";
 
         nint[] layouts = new nint[32];
@@ -223,7 +229,10 @@ sealed partial class Program
             Sleep = Thread.Sleep,
             IsVoiceUiVisible = IsVoiceUiVisible,
             RestoreFocusedLayoutOnFocusLoss = restoreFocusedLayout,
+            Trace = TraceAction,
         };
+        TraceAction(restoreFocusedLayout ? "startup-focused-restore-on" : "startup-focused-restore-off");
+        Trace.Flush();
 
         nint hInstance = GetModuleHandleW(null);
         var wndClass = new WNDCLASSW
@@ -255,7 +264,12 @@ sealed partial class Program
         _ = SetTimer(hwnd, TimerId, FocusWatchIntervalMs, 0);
 
         // Best-effort restore if the process exits while dictating.
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => Core.RestoreIfDictating();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            TraceAction("process-exit");
+            Core.RestoreIfDictating();
+            Trace.Dispose();
+        };
 
         while (GetMessageW(out MSG msg, 0, 0, 0) > 0)
         {
@@ -270,13 +284,18 @@ sealed partial class Program
         switch (msg)
         {
             case WmHotkey when wParam == HotkeyId:
+                TraceAction("hotkey");
                 Core.Toggle();
+                Trace.Flush();
                 return 0;
             case WmTimer when wParam == TimerId:
                 Core.CheckDictationFocus();
+                Trace.Flush();
                 return 0;
             case WmQueryEndSession:
+                TraceAction("query-end-session");
                 Core.RestoreIfDictating();
+                Trace.Flush();
                 return 1; // allow shutdown
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -311,14 +330,20 @@ sealed partial class Program
         {
             _ = AttachThreadInput(self, attachTo, false);
         }
+        TraceAction(ok ? "restore-focus-ok" : "restore-focus-failed");
         return ok;
     }
 
-    static bool RequestLayout(nint hwnd, nint hkl) =>
-        SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
+    static bool RequestLayout(nint hwnd, nint hkl)
+    {
+        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
+        TraceAction(requested ? $"layout-request-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-failed-0x{hwnd:X}-0x{hkl:X}");
+        return requested;
+    }
 
     static void SendWinH()
     {
+        TraceAction("winh-begin");
         // Empirically verified recipe: left-Win injection is ignored by the shell;
         // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
         SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
@@ -326,12 +351,14 @@ sealed partial class Program
         SendKey(0, 0x23, up: false, useScanCode: true);
         SendKey(0, 0x23, up: true, useScanCode: true);
         SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+        TraceAction("winh-sent");
     }
 
     static void SendEscape()
     {
         SendKey(0, 0x01, up: false, useScanCode: true);
         SendKey(0, 0x01, up: true, useScanCode: true);
+        TraceAction("escape-sent");
     }
 
     static void SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
@@ -352,6 +379,7 @@ sealed partial class Program
         };
         if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
         {
+            TraceAction("send-input-failed");
             Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
         }
     }
@@ -365,7 +393,22 @@ sealed partial class Program
         {
             return;
         }
+        TraceAction($"popup-show-0x{hwnd:X}");
         Core.OnVoiceUiShown();
+        Trace.Flush();
+    }
+
+    static void TraceAction(string eventName)
+    {
+        if (!Trace.Enabled)
+        {
+            return;
+        }
+        nint foreground = GetForegroundWindow();
+        uint foregroundTid = foreground != 0 ? GetWindowThreadProcessId(foreground, out _) : 0;
+        nint foregroundHkl = foregroundTid != 0 ? GetKeyboardLayout(foregroundTid) : 0;
+        Trace.Write(GetTickCount64(), eventName, foreground, foregroundTid, foregroundHkl,
+            Core.IsDictating, Core.WaitingForBar, Core.StopConfirmPending);
     }
 
     // stop-flash: the bar's launch confirmation also polls for this window.
