@@ -31,3 +31,8 @@
 - T11: user-confirmed Firefox and Word (Office-class) cycles work (2026-08-08).
 - Restore-timing tuning: the original 300 ms foreground-settle cap measured 440-442 ms in Notepad and 427-437 ms in VS Code; a 100 ms cap measured 225-265 ms before the probe's fixed launch delay was found to race slow Voice Typing startup. The zero-wait implementation was accepted from user-driven cycles as substantially faster, with only a residual brief background-window flash (2026-08-08).
 - Restore-timing tuning: watcher-backed VS Code cycles repeatedly restored `fi-FI` after `en-US` with focus-before-layout plus confirmation and one retry. Layout-before-focus visibly exposed the background window and left VS Code on `en-US`, so that ordering was rejected (2026-08-08).
+
+## Completion
+
+- Completed at: 2026-08-08T09:08:59.392Z
+- Mode: normal
