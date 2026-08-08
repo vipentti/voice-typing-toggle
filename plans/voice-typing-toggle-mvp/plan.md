@@ -22,8 +22,11 @@ implements the "MVP Scope / Version 0.1" section of that document.
   rather than declared upfront.
 - Foreground-thread layout reading, `WM_INPUTLANGCHANGEREQUEST` switching with
   confirmation polling and measured latency, `SendInput` for `Win+H`,
-  `RegisterHotKey` with a hidden message-only window, and the Idle/Dictating
-  toggle.
+  `RegisterHotKey` with a hidden message-only window, the Idle/Dictating
+  toggle, and a self-healing foreground watcher: while Dictating, if focus
+  leaves the dictation target (the Voice Typing bar auto-closes on focus
+  change on this machine), restore the saved layout and reset to Idle
+  immediately.
 - A test project added once the pure logic exists, covering English-layout
   selection and state-machine transitions.
 - Native AOT publish configuration for `win-x64`.
@@ -80,10 +83,17 @@ match, otherwise none — treated as a hard stop by callers. This and the toggle
 state machine are the only pure logic, and they sit behind narrow seams so they can
 be unit-tested; everything else is thin Win32 wrapping verified by running it.
 
-On stop, `Win+H` is sent first and the saved layout is restored last. Closing Voice
-Typing can shift focus, so restoring last means the restore lands on whatever
-thread ends up foreground — which is also the concept document's "restore to
-foreground at toggle time" rule, and resolves its open question on ordering.
+On stop, the Voice Typing bar is closed with `Escape` (on this build `Win+H`
+while listening only pauses it) and the saved layout is restored to the saved
+window, whose foreground is then restored — the bar's close drops focus to the
+taskbar, so "foreground at stop time" is unreliable. The saved layout is
+restored to the saved window, not the foreground-at-stop window, for the same
+reason.
+
+The toggle state is not optimistic: the bar closes on any focus change, so a
+`WM_TIMER` watcher (250 ms) resets to Idle and restores the saved layout as
+soon as focus leaves the dictation target. This keeps the state self-healing;
+the next hotkey press is always a fresh start.
 
 Start-side failures leave the utility Idle and never send `Win+H`. A `SendInput`
 failure after a confirmed switch restores the saved layout immediately. Shutdown
@@ -150,7 +160,10 @@ recorded anywhere.
   read on the stop press. The chosen rule is deliberately "restore to whatever is
   foreground at stop time"; if manual testing shows this misbehaves, it is a plan
   revision.
-- The toggle state is optimistic: if the user closes Voice Typing by other means,
-  the utility's state and reality diverge until the next toggle.
+- The toggle state self-heals: the bar auto-closes on focus change, so a
+  `WM_TIMER` watcher restores the saved layout and resets to Idle when focus
+  leaves the dictation target; state never drifts past the next focus change.
+  If some later Windows build stops auto-closing the bar, the watcher's
+  focus-away rule still fires only when the user actually switched apps.
 - Native AOT publishing requires the MSVC build prerequisites on the development
   machine; `dotnet build` alone will not surface a missing toolchain.

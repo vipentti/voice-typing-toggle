@@ -11,6 +11,7 @@ partial class Program
     const uint SmtoAbortIfHung = 0x0002;
     const uint LangEnUs = 0x0409;
     const uint WmHotkey = 0x0312;
+    const uint WmTimer = 0x0113;
     const uint WmQueryEndSession = 0x0011;
     const uint WmEndSession = 0x0016;
     const uint WmDestroy = 0x0002;
@@ -18,6 +19,8 @@ partial class Program
     const uint ModControl = 0x0002;
     const nint HwndMessage = -3; // HWND_MESSAGE: message-only window
     const int HotkeyId = 1;
+    const int TimerId = 2;
+    const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
     const uint KeyeventfScanCode = 0x0008;
@@ -73,6 +76,24 @@ partial class Program
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DestroyWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    private static partial nint SetTimer(nint hWnd, nint nIDEvent, uint uElapse, nint lpTimerFunc);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool KillTimer(nint hWnd, nint uIDEvent);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetForegroundWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint GetCurrentThreadId();
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint GetModuleHandleW(string? lpModuleName);
@@ -143,6 +164,7 @@ partial class Program
 
     private static nint _englishLayout;
     private static nint _savedLayout;
+    private static nint _savedWindow;
     private static bool _dictating;
 
     static int Main()
@@ -182,6 +204,7 @@ partial class Program
                 "Voice Typing Toggle", 0x10);
             return 1;
         }
+        _ = SetTimer(hwnd, TimerId, FocusWatchIntervalMs, 0);
 
         // Best-effort restore if the process exits while dictating.
         AppDomain.CurrentDomain.ProcessExit += (_, _) => RestoreIfDictating();
@@ -191,6 +214,7 @@ partial class Program
             _ = TranslateMessage(in msg);
             _ = DispatchMessageW(in msg);
         }
+        _ = KillTimer(hwnd, TimerId);
         _ = UnregisterHotKey(hwnd, HotkeyId);
         _ = DestroyWindow(hwnd);
         return 0;
@@ -203,6 +227,9 @@ partial class Program
             case WmHotkey when wParam == HotkeyId:
                 Toggle();
                 return 0;
+            case WmTimer when wParam == TimerId:
+                CheckDictationFocus();
+                return 0;
             case WmQueryEndSession:
                 RestoreIfDictating();
                 return 1; // allow shutdown
@@ -211,6 +238,17 @@ partial class Program
                 return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
+    // Self-healing state: the Voice Typing bar auto-closes on any focus change,
+    // so once focus leaves the dictation target the state is stale — restore the
+    // saved layout and go Idle. The next hotkey press then starts fresh.
+    static void CheckDictationFocus()
+    {
+        if (_dictating && GetForegroundWindow() != _savedWindow)
+        {
+            RestoreIfDictating();
+        }
     }
 
     static void Toggle()
@@ -244,24 +282,50 @@ partial class Program
             }
         }
         _savedLayout = current;
+        _savedWindow = hwnd;
         _dictating = true;
         SendWinH();
     }
 
     static void StopDictation()
     {
-        SendEscape(); // closes the Voice Typing bar (Win+H alone only stops listening on this build)
-        Thread.Sleep(300); // let the bar close so focus settles
-        nint hwnd = GetForegroundWindow();
-        if (hwnd != 0 && _savedLayout != 0)
+        SendEscape();
+        Thread.Sleep(100);
+        // Retry only if the bar is still there: when Escape #1 worked, the bar's close
+        // moves foreground away from the saved window — a second Escape would then hit
+        // whatever the shell raised (an unrelated app).
+        if (GetForegroundWindow() == _savedWindow)
         {
-            uint tid = GetWindowThreadProcessId(hwnd, out _);
+            SendEscape(); // apps like terminals consume the first Escape as a control char
+        }
+        // The bar close drops foreground (often to 0 momentarily); claim the saved
+        // window right then, before the shell raises its own candidate (Start, MRU).
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 300 && GetForegroundWindow() != 0)
+        {
+            Thread.Sleep(10);
+        }
+        nint restoreTarget = _savedWindow;
+        // The bar's close can drop focus to the taskbar; the saved window is the real target.
+        if (restoreTarget == 0)
+        {
+            restoreTarget = GetForegroundWindow();
+        }
+        if (restoreTarget != 0)
+        {
+            bool ok = RestoreFocus(restoreTarget); // restore focus first, then layout: shortest visible blip
+            _ = ok;
+        }
+        if (restoreTarget != 0 && _savedLayout != 0)
+        {
+            uint tid = GetWindowThreadProcessId(restoreTarget, out _);
             if (GetKeyboardLayout(tid) != _savedLayout)
             {
-                _ = RequestLayout(hwnd, _savedLayout);
+                _ = RequestLayout(restoreTarget, _savedLayout);
             }
         }
         _savedLayout = 0;
+        _savedWindow = 0;
         _dictating = false;
     }
 
@@ -271,14 +335,46 @@ partial class Program
         {
             return;
         }
-        nint hwnd = GetForegroundWindow();
-        if (hwnd != 0 && _savedLayout != 0)
+        nint target = _savedWindow != 0 ? _savedWindow : GetForegroundWindow();
+        if (target != 0 && _savedLayout != 0)
         {
-            uint tid = GetWindowThreadProcessId(hwnd, out _);
-            _ = RequestLayout(hwnd, _savedLayout);
+            _ = RequestLayout(target, _savedLayout);
         }
         _savedLayout = 0;
+        _savedWindow = 0;
         _dictating = false;
+    }
+
+    // A background process cannot normally take foreground; attaching our input
+    // queue to the CURRENT foreground thread's grants its last-input right (the
+    // classic trick — attaching to the target alone is denied intermittently).
+    static bool RestoreFocus(nint hwnd)
+    {
+        if (GetForegroundWindow() == hwnd)
+        {
+            return true;
+        }
+        uint self = GetCurrentThreadId();
+        bool attached = false;
+        nint current = GetForegroundWindow();
+        uint attachTo = current != 0 ? GetWindowThreadProcessId(current, out _) : GetWindowThreadProcessId(hwnd, out _);
+        if (attachTo != 0 && attachTo != self)
+        {
+            attached = AttachThreadInput(self, attachTo, true);
+        }
+        bool ok = SetForegroundWindow(hwnd);
+        if (!ok)
+        {
+            // The shell may still be mid-transition (e.g. raising the Start menu);
+            // retry once it settles.
+            Thread.Sleep(100);
+            ok = SetForegroundWindow(hwnd);
+        }
+        if (attached)
+        {
+            _ = AttachThreadInput(self, attachTo, false);
+        }
+        return ok;
     }
 
     // Pure selection logic: exact en-US first, then any English primary language.
