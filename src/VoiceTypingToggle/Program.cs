@@ -487,7 +487,7 @@ sealed partial class Program
     {
         switch (msg)
         {
-            case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null:
+            case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null && ListeningEnabled && HotkeyEnabled:
                 TraceAction("hotkey");
                 Core.Toggle();
                 UpdateTrayTooltip();
@@ -521,7 +521,7 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
-            case WmWinHDown when ShutdownPolicy.Kind is null:
+            case WmWinHDown when ShutdownPolicy.Kind is null && ListeningEnabled:
                 // Async Win+H gesture, step 1: the loop is free (no nested
                 // message pump), the low-level hook stays responsive, and the
                 // injected right-Win chains to the shell immediately.
@@ -709,6 +709,15 @@ sealed partial class Program
     {
         if (ListeningEnabled)
         {
+            if (WinHHoldArmed)
+            {
+                // Resolve an armed hold before any teardown: a stale WmWinHDown
+                // dispatched during the menu modal loop can arm a hold after the
+                // tray-menu-open resolution ran, and the hold timer is killed
+                // below. Completing while the core is still dictating sends no
+                // Escape and never leaves the injected Win held.
+                CompleteWinHInjection();
+            }
             AbortActiveSessionIfAny();
             ListeningEnabled = false;
             if (HotkeyRegistered)
@@ -730,36 +739,26 @@ sealed partial class Program
         }
         else
         {
-            // Re-enable restores state per checkbox intent in dependency
-            // order: focus-watch timer, hook, then hotkey.
-            ListeningEnabled = true;
-            FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
-            if (InterceptWinHEnabled && KeyboardHook == 0)
-            {
-                TryInstallKeyboardHook(); // failure clears the intercept intent (nonfatal)
-            }
+            // Re-enable is all-or-nothing at the hotkey: registration is the
+            // only failure that rejects it, so register first while the master
+            // is still disabled. On failure clear the hotkey intent and leave
+            // the disabled state untouched (no rollback needed). On success
+            // apply the rest in dependency order: timer, hook, then enable.
             if (HotkeyEnabled && !HotkeyRegistered && !RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
             {
-                // All-or-nothing: roll the just-applied hook and timer back
-                // and stay disabled; the checkbox shows unchecked, matching
-                // the actual registration state.
                 HotkeyEnabled = false;
-                ListeningEnabled = false;
-                if (KeyboardHook != 0)
-                {
-                    UninstallKeyboardHook();
-                }
-                if (FocusTimerRunning)
-                {
-                    _ = KillTimer(AppWindow, TimerId);
-                    FocusTimerRunning = false;
-                }
                 MessageBoxW(AppWindow, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
                     "Voice Typing Toggle", 0x10);
                 TraceAction("listening-reenable-hotkey-failed");
             }
-            if (ListeningEnabled)
+            else
             {
+                ListeningEnabled = true;
+                FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+                if (InterceptWinHEnabled && KeyboardHook == 0)
+                {
+                    TryInstallKeyboardHook(); // failure clears the intercept intent (nonfatal)
+                }
                 TraceAction("listening-on");
             }
         }
