@@ -75,9 +75,6 @@ internal sealed class ToggleCore
         {
             return;
         }
-        // A new session supersedes any pending native-stop restore: the stale
-        // snapshot must not restore the previous window/layout during this one.
-        nativeStopRestorePending = false;
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
@@ -85,9 +82,9 @@ internal sealed class ToggleCore
         if (!IsEnglishLayout(current) &&
             (!RequestLayout(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
-            return; // stay Idle
+            return; // stay Idle; a pending native-stop restore remains armed
         }
-        SavedLayout = current;
+        SavedLayout = ConsumePendingNativeStop(hwnd, current);
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
@@ -121,18 +118,15 @@ internal sealed class ToggleCore
         {
             return;
         }
-        // Same supersede rule as StartDictation: never restore the previous
-        // native-stop snapshot during a new session.
-        nativeStopRestorePending = false;
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
         if (!IsEnglishLayout(current) &&
             (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
             Trace("race-layout-failed");
-            return; // stay Idle; no injected Win+H; native press proceeds
+            return; // stay Idle; no injected Win+H; native press proceeds; pending restore remains armed
         }
-        SavedLayout = current;
+        SavedLayout = ConsumePendingNativeStop(hwnd, current);
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false;
@@ -158,6 +152,30 @@ internal sealed class ToggleCore
         SavedWindow = 0;
         IsDictating = false;
         Trace("native-stop-armed");
+    }
+
+    // Consumes a pending native-stop snapshot once the new session is
+    // established (never on a failed start: the timer must still restore it).
+    // Same target: the snapshot's original layout becomes the new session's
+    // restore baseline, because the thread is still on English. Different
+    // target: the old target's layout is restored first, without stealing
+    // focus, and the new target's own pre-switch layout is the baseline.
+    nint ConsumePendingNativeStop(nint hwnd, nint current)
+    {
+        if (!nativeStopRestorePending)
+        {
+            return current;
+        }
+        nativeStopRestorePending = false;
+        if (stopConfirmWindow == hwnd)
+        {
+            return stopConfirmLayout; // carry the original layout forward
+        }
+        if (stopConfirmWindow != 0)
+        {
+            RestoreLayout(stopConfirmWindow, stopConfirmLayout);
+        }
+        return current;
     }
 
     void CompleteNativeStopRestore()

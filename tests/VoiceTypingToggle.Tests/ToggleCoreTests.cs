@@ -694,18 +694,114 @@ public class ToggleCoreTests
 
         Assert.True(core.IsDictating);
         Assert.Empty(focusCalls);
-        Assert.Equal([(Target, EnUs)], requests); // no stale FiFi restore
+        Assert.Equal(FiFi, core.SavedLayout); // the original layout is carried forward as the baseline
+        Assert.Equal([(Target, EnUs)], requests); // no stale restore
+    }
+
+    [Fact]
+    public void RestartOnSameWindowCarriesOriginalLayoutForward()
+    {
+        var (core, requests) = NewCore();
+        int escapes = 0;
+        core.SendEscape = () => escapes++;
+
+        core.Toggle();              // session A: FiFi -> EnUs, baseline FiFi
+        core.StopDictationNative(); // pending restore snapshot: FiFi
+        core.Toggle();              // session B on the same window (still English)
+        Assert.True(core.IsDictating);
+        Assert.Equal(FiFi, core.SavedLayout); // carried forward, not the active English
+
+        core.Toggle(); // session B stop
+
+        Assert.False(core.IsDictating);
+        Assert.Equal([(Target, EnUs), (Target, FiFi)], requests); // B restores the ORIGINAL layout
+    }
+
+    [Fact]
+    public void RestartOnOtherWindowRestoresOldTargetLayout()
+    {
+        const nint other = 0xABCD;
+        var requests = new List<(nint hwnd, nint hkl)>();
+        var layouts = new Dictionary<uint, nint> { [7] = FiFi, [8] = FiFi };
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => Target,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            SendWinH = () => { },
+            SendEscape = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle(); // session A on Target: FiFi -> EnUs
+        core.StopDictationNative();
+        core.GetForeground = () => other;
+        core.Toggle(); // session B on other: FiFi -> EnUs; Target's original layout restored first
+
+        Assert.True(core.IsDictating);
+        Assert.Equal(FiFi, layouts[7]); // old target's original layout restored, no focus steal
+        Assert.Equal(FiFi, core.SavedLayout); // session B baseline = other's original
+        Assert.Equal([(Target, EnUs), (other, EnUs), (Target, FiFi)], requests);
+    }
+
+    [Fact]
+    public void FailedRestartLeavesPendingNativeStopArmed()
+    {
+        const nint other = 0xABCD;
+        var requests = new List<(nint hwnd, nint hkl)>();
+        var layouts = new Dictionary<uint, nint> { [7] = FiFi, [8] = FiFi };
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => Target,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            SendWinH = () => { },
+            SendEscape = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle(); // session A on Target
+        core.StopDictationNative();
+        core.GetForeground = () => other;
+        var requestLayout = core.RequestLayout;
+        core.RequestLayout = (h, hkl) => h != other ? requestLayout(h, hkl) : false; // session B's switch on other fails
+        core.Toggle(); // B fails: stays Idle, pending restore must stay armed
+        Assert.False(core.IsDictating);
+
+        core.CheckDictationFocus(); // tick 1: settle
+        core.CheckDictationFocus(); // tick 2: the pending restore still runs
+
+        Assert.Equal(FiFi, layouts[7]);
+        Assert.Equal([(Target, EnUs), (Target, FiFi)], requests);
+        Assert.False(core.IsDictating);
     }
 
     [Fact]
     public void StartOnOtherWindowAfterNativeStopCancelsPendingRestore()
     {
         const nint other = 0xABCD;
-        var (core, requests) = NewCore();
+        var requests = new List<(nint hwnd, nint hkl)>();
+        var layouts = new Dictionary<uint, nint> { [7] = FiFi, [8] = FiFi };
         var focusCalls = new List<nint>();
         nint foreground = Target;
-        core.GetForeground = () => foreground;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => foreground,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            SendWinH = () => { },
+            SendEscape = () => { },
+            RestoreFocus = h => { focusCalls.Add(h); return true; },
+            Sleep = _ => { },
+        };
 
         core.Toggle();               // session A on Target
         core.StopDictationNative();
@@ -716,7 +812,8 @@ public class ToggleCoreTests
         Assert.True(core.IsDictating);
         Assert.Equal(other, core.SavedWindow);
         Assert.Empty(focusCalls); // stale restore must not pull focus back to the old target
-        Assert.Equal([(Target, EnUs)], requests); // no stale FiFi restore; session B found English already active
+        Assert.Equal(FiFi, core.SavedLayout); // session B baseline: other's original layout
+        Assert.Equal([(Target, EnUs), (other, EnUs), (Target, FiFi)], requests); // old target restored, session B switched
     }
 
     [Fact]

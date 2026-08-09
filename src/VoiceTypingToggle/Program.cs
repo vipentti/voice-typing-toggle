@@ -527,7 +527,15 @@ sealed partial class Program
                 SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
                 TraceAction("winh-win-down");
                 WinHHoldArmed = true;
-                _ = SetTimer(AppWindow, WinHHoldTimerId, WinHHoldMs, 0);
+                if (SetTimer(AppWindow, WinHHoldTimerId, WinHHoldMs, 0) == 0)
+                {
+                    // The hold timer could not be created: finish the gesture
+                    // synchronously so the injected Win is never left held,
+                    // then roll the armed session back.
+                    TraceAction("winh-timer-failed");
+                    CompleteWinHInjection(forceClose: true);
+                    Core.RestoreIfDictating();
+                }
                 return 0;
             case WmTrayIcon when ShutdownPolicy.Kind is null:
                 HandleTrayIconMessage(wParam, lParam);
@@ -911,15 +919,22 @@ sealed partial class Program
         // is completed by the hold timer on the free message loop, so the
         // low-level hook chains every injected event to the shell immediately
         // and no nested message pump or reentrancy guard is needed. The shell
-        // sees the same timing as the original synchronous recipe.
-        _ = PostMessageW(AppWindow, WmWinHDown, 0, 0);
+        // sees the same timing as the original synchronous recipe. If the
+        // post fails, no gesture is coming: roll the armed session back now.
+        if (!PostMessageW(AppWindow, WmWinHDown, 0, 0))
+        {
+            TraceAction("winh-queue-failed");
+            Core.RestoreIfDictating();
+        }
     }
 
     // Async Win+H gesture, step 2 (hold timer): complete the recipe, or abort
-    // if the session ended during the hold. Releasing the injected Win key on
-    // abort matters: a stuck injected Win would turn the next physical key
-    // into a Win-combo for the shell.
-    static void CompleteWinHInjection()
+    // if the session ended during the hold. Completing with H before
+    // releasing Win is mandatory: a bare Win-up opens the Start menu. On
+    // abort the H opens the bar (or toggles a natively opened one) and the
+    // Escape closes it again; a stray Escape reaching the app matches the
+    // existing stop-before-launch semantics.
+    static void CompleteWinHInjection(bool forceClose = false)
     {
         WinHHoldArmed = false;
         _ = KillTimer(AppWindow, WinHHoldTimerId);
@@ -931,7 +946,7 @@ sealed partial class Program
         SendKey(0, 0x23, up: false, useScanCode: true);
         SendKey(0, 0x23, up: true, useScanCode: true);
         SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
-        if (!Core.IsDictating)
+        if (forceClose || !Core.IsDictating)
         {
             SendEscape();
             TraceAction("winh-aborted");
