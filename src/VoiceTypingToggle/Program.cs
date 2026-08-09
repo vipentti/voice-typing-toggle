@@ -521,7 +521,7 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
-            case WmWinHDown when ShutdownPolicy.Kind is null && ListeningEnabled:
+            case WmWinHDown when ShutdownPolicy.Kind is null && ListeningEnabled && Core.IsDictating:
                 // Async Win+H gesture, step 1: the loop is free (no nested
                 // message pump), the low-level hook stays responsive, and the
                 // injected right-Win chains to the shell immediately.
@@ -709,15 +709,6 @@ sealed partial class Program
     {
         if (ListeningEnabled)
         {
-            if (WinHHoldArmed)
-            {
-                // Resolve an armed hold before any teardown: a stale WmWinHDown
-                // dispatched during the menu modal loop can arm a hold after the
-                // tray-menu-open resolution ran, and the hold timer is killed
-                // below. Completing while the core is still dictating sends no
-                // Escape and never leaves the injected Win held.
-                CompleteWinHInjection();
-            }
             AbortActiveSessionIfAny();
             ListeningEnabled = false;
             if (HotkeyRegistered)
