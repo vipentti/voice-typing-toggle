@@ -1,0 +1,11 @@
+The 16, 20, 24, and 32 pixel images use independently grid-aligned geometry.
+
+At 16 pixels, the keyline is one pixel, the microphone body is three pixels
+wide, and the opposing arrows have a one-pixel center gap. The microphone bowl
+and arrow base use heavier strokes than a proportional master downscale would
+produce. These adjustments keep the microphone distinct from the keycap and
+make the two arrow directions readable without resembling a smile, moustache,
+or audio waveform.
+
+The comparison sheet includes each tray size at actual size on light and dark
+taskbar backgrounds, plus a nearest-neighbor 4x view of the 16 pixel artwork.
