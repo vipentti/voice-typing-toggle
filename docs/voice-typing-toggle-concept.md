@@ -124,7 +124,9 @@ Recommended initial default:
 Ctrl+Alt+H
 ```
 
-A custom hotkey should be used instead of intercepting the physical `Win+H` shortcut.
+Additionally, the utility can observe the physical `Win+H` shortcut with a
+low-level keyboard hook (opt-out, tray-toggleable, see "Physical `Win+H`
+interception" below).
 
 The utility internally generates `Win+H` when it needs Windows Voice Typing to start or stop.
 
@@ -771,33 +773,48 @@ This should only be added if the simple state model proves unreliable.
 
 ### Physical `Win+H` interception
 
-A later version could let the user press the normal:
+Implemented as an opt-out feature (tray checkbox "Intercept Win+H", checked by
+default, session-only). The utility installs a `WH_KEYBOARD_LL` hook that
+observes the physical `Win+H` shortcut and races the English layout switch
+ahead of Windows' own Voice Typing launch:
 
 ```text
-Win+H
+observe physical Win+H
+switch foreground thread to English (bounded, ~100 ms request + ~100 ms confirm)
+chain the physical Win+H unchanged; Windows opens the bar natively in English
 ```
 
-and transparently perform:
+The hook never swallows or replays keys for Win+H; Windows opens the bar
+natively. Fail-open by construction: if the English layout cannot be
+confirmed, the physical Win+H still proceeds natively and the bar opens in
+the current layout. The existing `Ctrl+Alt+H` path is unchanged and always
+active; both entry points share the same `ToggleCore` state machine.
 
-```text
-switch to English
-forward/synthesize Win+H
-restore language on second press
-```
+While dictating, the hook also handles external close keys:
 
-This would require a low-level keyboard hook such as:
+- `Escape`: the user's own key closes the bar natively; the utility only
+  restores the saved layout and focus afterwards (positive-only watchdog).
+- `Enter` and `Space`: the bar does not close on either natively, so the
+  utility swallows that one key and runs the standard Escape-first stop from
+  the message loop, closing the bar and restoring the saved state. Each is
+  gated by its own tray checkbox (checked by default, session-only).
 
-```text
-SetWindowsHookEx(WH_KEYBOARD_LL)
-```
+The interception is deliberately not suppression/reinjection: a full
+intercept would need Win-key leak handling (plain Win, Win+E, Win+D) and a
+pending-Win replay policy, which conflicts with the single-purpose guardrail.
+See `tmp/winh-interception-research.md` for the spike evidence behind the
+race timing.
 
-and suppression/reinjection logic.
+Requirements:
 
-This is deliberately excluded from the MVP because it:
-
-- adds complexity;
-- introduces recursion/injection edge cases;
-- provides relatively little benefit compared with a dedicated global hotkey.
+- `WH_KEYBOARD_LL` hook installed only while interception is enabled;
+  uninstalled at shutdown.
+- Hook callback: exception-safe, never swallows except the scoped Enter/Space
+  close keys while dictating, never logs key content, never blocks or injects
+  from the callback (the Idle race-start's bounded layout request/confirm is
+  the one synchronous exception, worst case ~200 ms).
+- Keyboard state (Win keys) is tracked from hook events themselves, never
+  `GetKeyState`.
 
 ---
 
