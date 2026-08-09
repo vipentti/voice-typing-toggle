@@ -4,7 +4,8 @@
 
 A very small Windows utility that makes voice typing easier on machines where Finnish is the normal typing language but Windows voice typing is only usable in English.
 
-The utility provides a single toggle hotkey:
+The utility provides a single toggle hotkey, tray-gated and off by default
+(session-only opt-in):
 
 - First press:
   1. Remember the input language/layout currently active in the foreground application.
@@ -102,15 +103,18 @@ The process can run in the background with a hidden window solely to receive Win
 
 The utility has one static notification-area icon and no visible application
 window, taskbar button, or Alt+Tab entry. Its tooltip identifies the utility and
-reports Idle or Dictating. The icon can appear in the notification-area overflow
-depending on the user's Windows taskbar preferences.
+reports Idle, Dictating, or Disabled. The icon can appear in the
+notification-area overflow depending on the user's Windows taskbar preferences.
 
-Right-click and keyboard context-menu activation show informational application,
-status, and hotkey rows plus Exit. Left-click and double-click are inert.
-Opening the menu during dictation follows the existing focus-loss recovery path,
-so the saved layout is restored and the menu reports Idle. Exit waits for any
-stop confirmation and late-popup correction before teardown; an unconfirmed
-user Exit leaves the utility running with its icon and reports an error.
+Right-click and keyboard context-menu activation show informational application
+and status rows, the toggle rows ("Enable listening", "Enable Ctrl+Alt+H",
+"Intercept Win+H", "Close dictation on Enter", "Close dictation on Space"), and
+Exit. Left-click and double-click are inert. Both toggles are session-only:
+every start begins from the defaults (listening on, hotkey off). Opening the
+menu during dictation follows the existing focus-loss recovery path, so the
+saved layout is restored and the menu reports Idle. Exit waits for any stop
+confirmation and late-popup correction before teardown; an unconfirmed user
+Exit leaves the utility running with its icon and reports an error.
 
 ---
 
@@ -124,9 +128,16 @@ Recommended initial default:
 Ctrl+Alt+H
 ```
 
-Additionally, the utility can observe the physical `Win+H` shortcut with a
-low-level keyboard hook (opt-out, tray-toggleable, see "Physical `Win+H`
-interception" below).
+The hotkey is a session-only opt-in: the tray checkbox "Enable Ctrl+Alt+H" is
+unchecked by default and the hotkey is not registered at startup, so an
+in-use combination is never a fatal startup condition. Checking the box
+registers the hotkey; registration failure (combination already in use)
+shows an error and leaves the box unchecked. The application also has a
+master session-only toggle "Enable listening" (checked by default) that
+switches off the whole listening part: while unchecked, the hotkey, the
+physical `Win+H` observation hook, and both timers are off, the sub-toggles
+are grayed out, the tray status reads "Disabled", and the application stays
+in the tray doing nothing.
 
 The utility internally generates `Win+H` when it needs Windows Voice Typing to start or stop.
 
@@ -787,8 +798,14 @@ chain the physical Win+H unchanged; Windows opens the bar natively in English
 The hook never swallows or replays keys for Win+H; Windows opens the bar
 natively. Fail-open by construction: if the English layout cannot be
 confirmed, the physical Win+H still proceeds natively and the bar opens in
-the current layout. The existing `Ctrl+Alt+H` path is unchanged and always
-active; both entry points share the same `ToggleCore` state machine.
+the current layout. Both entry points share the same `ToggleCore` state
+machine; the `Ctrl+Alt+H` entry is tray-gated ("Enable Ctrl+Alt+H",
+unchecked by default, session-only) and the hook itself is gated by the
+master "Enable listening" toggle plus its own "Intercept Win+H" checkbox
+(checked by default, session-only): a failed hook installation clears the
+intercept checkbox (nonfatal, physical Win+H stays native), and while
+listening is disabled the hook is uninstalled and physical Win+H is fully
+native.
 
 While dictating, the hook also handles external close keys:
 
