@@ -12,6 +12,8 @@ sealed partial class Program
     const uint WmQueryEndSession = 0x0011;
     const uint WmNull = 0x0000;
     const uint WmContextMenu = 0x007B;
+    const uint WmQuit = 0x0012;
+    const uint PmRemove = 0x0001;
     const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
@@ -143,6 +145,11 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "LoadIconW")]
     private static partial nint LoadIconW(nint hInstance, nint lpIconName);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PeekMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -357,6 +364,7 @@ sealed partial class Program
     private static bool HotkeyRegistered;
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
+    private static bool InHotkeyDispatch; // re-entrancy guard: never dispatch a hook observation while Toggle() is mid-flight
     private static readonly ShutdownDecision ShutdownPolicy = new();
 
     static int Main()
@@ -463,7 +471,15 @@ sealed partial class Program
         {
             case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null:
                 TraceAction("hotkey");
-                Core.Toggle();
+                InHotkeyDispatch = true;
+                try
+                {
+                    Core.Toggle();
+                }
+                finally
+                {
+                    InHotkeyDispatch = false;
+                }
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
@@ -817,11 +833,39 @@ sealed partial class Program
         // Empirically verified recipe: left-Win injection is ignored by the shell;
         // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
         SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
-        Thread.Sleep(500);
+        // The low-level hook delivers every key event through this thread's message
+        // loop, so holding the Win key with a blocked loop would stall system-wide
+        // keyboard processing and delay the injected events past the shell's combo
+        // window. Pump the loop during the hold so the injected events chain to the
+        // shell promptly, matching the spike's working conditions.
+        PumpMessageLoop(500);
         SendKey(0, 0x23, up: false, useScanCode: true);
         SendKey(0, 0x23, up: true, useScanCode: true);
         SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
         TraceAction("winh-sent");
+    }
+
+    // Bounded pump used only while SendWinH holds a key; hook callbacks, timers,
+    // and tray messages keep flowing so injected input is never gated on a
+    // blocked loop. Re-entrant dispatch is prevented by the InHotkeyDispatch guard.
+    static void PumpMessageLoop(int timeoutMs)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (!PeekMessageW(out MSG msg, 0, 0, 0, PmRemove))
+            {
+                Thread.Sleep(1);
+                continue;
+            }
+            if (msg.message == WmQuit)
+            {
+                PostQuitMessage(0); // re-post so the outer GetMessageW loop exits
+                return;
+            }
+            _ = TranslateMessage(in msg);
+            _ = DispatchMessageW(in msg);
+        }
     }
 
     static void SendEscape()
@@ -908,10 +952,36 @@ sealed partial class Program
         return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
     }
 
-    // T1: observation seam, trace-only. T3 wires the race-start (Idle) and
-    // native-stop (Dictating) dispatch through ToggleCore.
+    // Observation dispatch (called from the hook callback on the message-loop
+    // thread, BEFORE the event is chained onward). Idle: bounded synchronous
+    // race-start so English is confirmed before the native Win+H proceeds.
+    // Dictating: native stop only, which injects nothing; the physical press
+    // itself closes the bar, and restoration runs later on the focus-watch
+    // timer. Never dispatch while a shutdown drains.
     static void OnWinHObservation()
     {
+        // Re-entrancy guard: SendWinH pumps the message loop, so a physical
+        // Win+H during the pump must not dispatch while Toggle() is mid-flight.
+        // Never dispatch while a shutdown drains.
+        if (InHotkeyDispatch || ShutdownPolicy.Kind is not null)
+        {
+            return;
+        }
+        TraceAction("winh-observation");
+        if (Core.IsDictating)
+        {
+            Core.StopDictationNative();
+        }
+        else
+        {
+            nint hwnd = Core.GetForeground();
+            if (hwnd != 0)
+            {
+                Core.StartDictationRace(hwnd);
+            }
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
     }
 
     static bool TryInstallKeyboardHook()
