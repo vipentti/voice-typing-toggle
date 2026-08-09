@@ -819,7 +819,7 @@ While dictating, the hook also handles external close keys:
 The interception is deliberately not suppression/reinjection: a full
 intercept would need Win-key leak handling (plain Win, Win+E, Win+D) and a
 pending-Win replay policy, which conflicts with the single-purpose guardrail.
-See `tmp/winh-interception-research.md` for the spike evidence behind the
+See `docs/winh-interception-research.md` for the spike evidence behind the
 race timing.
 
 Requirements:
