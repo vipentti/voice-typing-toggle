@@ -40,6 +40,7 @@ sealed partial class Program
     const uint TpmRightButton = 0x0002;
     const uint TpmReturnCommand = 0x0100;
     const uint MenuExitId = 1;
+    const int ShutdownCorrectionLimit = 2;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -322,6 +323,15 @@ sealed partial class Program
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
     private static bool ShutdownRequested;
+    private static ShutdownReason RequestedShutdownReason;
+    private static bool ShutdownNeedsDrain;
+    private static int ShutdownCorrections;
+
+    private enum ShutdownReason
+    {
+        UserExit,
+        FatalTrayLoss,
+    }
 
     static int Main()
     {
@@ -389,11 +399,11 @@ sealed partial class Program
         if (AppIcon == 0)
         {
             MessageBoxW(AppWindow, "Could not load the embedded application icon.", "Voice Typing Toggle", 0x10);
-            RequestOrderlyShutdown();
+            RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss);
             return 1;
         }
 
-        var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, RequestOrderlyShutdown);
+        var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, () => RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss));
         if (!trayIcon.Install())
         {
             return 1;
@@ -428,6 +438,7 @@ sealed partial class Program
             case WmTimer when wParam == TimerId:
                 Core.CheckDictationFocus();
                 UpdateTrayTooltip();
+                ContinueShutdownIfNeeded();
                 Trace.Flush();
                 return 0;
             case WmQueryEndSession:
@@ -446,7 +457,7 @@ sealed partial class Program
         if (msg == TaskbarCreatedMessage && !ShutdownRequested)
         {
             TrayIconInstalled = false;
-            var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, RequestOrderlyShutdown);
+            var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, () => RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss));
             trayIcon.RecreateAfterTaskbarRestart();
             return 0;
         }
@@ -518,7 +529,7 @@ sealed partial class Program
             ReturnFocusToNotificationArea();
             if (command == MenuExitId)
             {
-                RequestOrderlyShutdown();
+                RequestOrderlyShutdown(ShutdownReason.UserExit);
             }
         }
         finally
@@ -602,18 +613,70 @@ sealed partial class Program
         MessageBoxW(AppWindow, text, "Voice Typing Toggle", 0x10);
     }
 
-    // T4 expands this shared entry point into the bounded, reason-aware shutdown
-    // coordinator. T2 needs it now so a tray-install failure cannot leave an
-    // invisible background process running.
-    static void RequestOrderlyShutdown()
+    static void RequestOrderlyShutdown(ShutdownReason reason)
     {
         if (ShutdownRequested)
         {
             return;
         }
         ShutdownRequested = true;
-        TraceAction("tray-shutdown-requested");
+        RequestedShutdownReason = reason;
+        ShutdownNeedsDrain = Core.IsDictating || Core.StopConfirmPending;
+        TraceAction(reason == ShutdownReason.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
+        if (Core.IsDictating)
+        {
+            Core.Toggle(); // normal stop keeps the watchdog armed for late popups
+            UpdateTrayTooltip();
+        }
+        ContinueShutdownIfNeeded();
+    }
+
+    static void ContinueShutdownIfNeeded()
+    {
+        if (!ShutdownRequested)
+        {
+            return;
+        }
+        if (!ShutdownNeedsDrain)
+        {
+            CompleteShutdown();
+            return;
+        }
+        if (!Core.IsDictating && !Core.StopConfirmPending && !IsVoiceUiVisible())
+        {
+            CompleteShutdown();
+            return;
+        }
+        if (Core.StopConfirmPending)
+        {
+            return;
+        }
+        if (ShutdownCorrections++ < ShutdownCorrectionLimit)
+        {
+            SendEscape();
+            Core.RestoreIfDictating();
+            return;
+        }
+        if (RequestedShutdownReason == ShutdownReason.UserExit)
+        {
+            ShutdownRequested = false;
+            ShutdownNeedsDrain = false;
+            ShutdownCorrections = 0;
+            MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.", "Voice Typing Toggle", 0x10);
+            return;
+        }
+        MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed after the notification icon was lost. It may require manual dismissal.", "Voice Typing Toggle", 0x10);
+        SendEscape();
         Core.RestoreIfDictating();
+        CompleteShutdown();
+    }
+
+    static void CompleteShutdown()
+    {
+        if (!ShutdownRequested)
+        {
+            return;
+        }
 
         if (TrayIconInstalled)
         {
@@ -748,6 +811,7 @@ sealed partial class Program
         TraceAction($"popup-show-0x{hwnd:X}");
         Core.OnVoiceUiShown();
         UpdateTrayTooltip();
+        ContinueShutdownIfNeeded();
         Trace.Flush();
     }
 
