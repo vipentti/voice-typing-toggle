@@ -31,7 +31,12 @@ choosing one source.
   checkbox (checked by default, session-only). While dictating, the hook also
   handles the close keys: `Escape` restores state after the native close;
   `Enter` and `Space` are swallowed and close the bar (tray-gated, checked by
-  default). The normal toggle hotkey is `Ctrl+Alt+H` and stays always active.
+  default). The normal toggle hotkey `Ctrl+Alt+H` is tray-gated ("Enable
+  Ctrl+Alt+H" checkbox, unchecked by default, session-only) and is not
+  registered at startup. A master "Enable listening" tray checkbox (checked by
+  default, session-only) gates the whole listening part: while unchecked, the
+  hotkey, the keyboard hook, and both timers are off, the sub-toggles are
+  grayed out, and the menu status reads "Disabled".
 - Never log dictated text, typed content, or captured keystrokes.
 - Save and restore the actual active `HKL`; never assume the original layout is
   Finnish. Keyboard layouts belong to input threads, not globally to a process
