@@ -20,8 +20,10 @@ jobs:
         run: dotnet tool restore
       - name: Check CSharpier formatting
         run: dotnet csharpier check .
-      - name: Check dotnet format
-        run: dotnet format VoiceTypingToggle.slnx --verify-no-changes
+      - name: Check dotnet format style
+        run: dotnet format VoiceTypingToggle.slnx style --verify-no-changes
+      - name: Check dotnet format analyzers
+        run: dotnet format VoiceTypingToggle.slnx analyzers --verify-no-changes
       - name: Build
         run: dotnet build VoiceTypingToggle.slnx
       - name: Test
