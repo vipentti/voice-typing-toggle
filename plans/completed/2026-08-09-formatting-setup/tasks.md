@@ -7,3 +7,8 @@
 - [x] T5 Run the one-time full-repo format pass (`dotnet csharpier .` then `dotnet format VoiceTypingToggle.slnx`); `dotnet build` and `dotnet test` pass; second `dotnet csharpier .` run produces no diff
 - [x] T6 Verify the hook end-to-end: commit with an unformatted staged `.cs` file auto-formats it, a non-C# commit is a no-op, a failing task blocks the commit; add README fresh-clone note (`dotnet tool restore`, `dotnet husky init`)
 - [x] T7 Extend `.github/workflows/ci.yml`: `dotnet tool restore`, then `dotnet csharpier check .`, `dotnet format style --verify-no-changes`, and `dotnet format analyzers --verify-no-changes` steps; add `.config/dotnet-tools.json` to the setup-dotnet cache-dependency-path; run the check commands locally to confirm they pass on the formatted repo
+
+## Completion
+
+- Completed at: 2026-08-09T18:55:18.220Z
+- Mode: normal
