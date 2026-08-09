@@ -9,10 +9,17 @@
          "include": ["**/*.cs"]
       },
       {
-         "name": "dotnet-format",
+         "name": "dotnet-format-style",
          "group": "pre-commit",
          "command": "dotnet",
-         "args": ["format", "VoiceTypingToggle.slnx", "--include", "${staged}"],
+         "args": ["format", "VoiceTypingToggle.slnx", "style", "--include", "${staged}"],
+         "include": ["**/*.cs"]
+      },
+      {
+         "name": "dotnet-format-analyzers",
+         "group": "pre-commit",
+         "command": "dotnet",
+         "args": ["format", "VoiceTypingToggle.slnx", "analyzers", "--include", "${staged}"],
          "include": ["**/*.cs"]
       },
       {

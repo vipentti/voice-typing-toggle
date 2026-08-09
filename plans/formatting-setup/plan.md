@@ -14,7 +14,9 @@ formatting is sufficient afterwards.
 - Add `.editorconfig` from the source URL, minus the
   `file_header_template` and `dotnet_diagnostic.IDE0073.severity` lines (no
   mandatory file headers; the template points at another repo's license and
-  this repo has no LICENSE file).
+  this repo has no LICENSE file), plus the CSharpier-documented
+  `dotnet_diagnostic.IDE0055.severity = none` suppression (whitespace
+  formatting belongs to CSharpier, IDE0055 conflicts with it).
 - Add `.config/dotnet-tools.json` with `csharpier` 1.3.0 and `husky` 0.9.1 as
   local tools.
 - Add `.husky/pre-commit` hook and `.husky/task-runner.json` running CSharpier
@@ -23,8 +25,9 @@ formatting is sufficient afterwards.
   `charset = utf-8-bom` conversion the editorconfig mandates.
 - README note on restoring tooling in a fresh clone.
 - CI step in `.github/workflows/ci.yml` that fails when formatting drifts:
-  `dotnet csharpier . --check` and `dotnet format VoiceTypingToggle.slnx
-  --verify-no-changes`; tool restore and cache-dependency-path extended to
+  `dotnet csharpier check .`, `dotnet format style` verify, and
+  `dotnet format analyzers` verify (whitespace excluded, per CSharpier docs);
+  tool restore and cache-dependency-path extended to
   `.config/dotnet-tools.json`.
 - No node/npm, no changes to product logic.
 
@@ -36,9 +39,13 @@ formatting is sufficient afterwards.
 - The hook runs `dotnet husky run --group pre-commit`; tasks in
   `task-runner.json` use the `${staged}` placeholder with `include: ["**/*.cs"]`
   so only staged C# files are touched:
-  1. `dotnet csharpier ${staged}` formats code.
-  2. `dotnet format VoiceTypingToggle.slnx --include ${staged}` applies
-     style/analyzer fixes from the editorconfig.
+  1. `dotnet csharpier format ${staged}` formats code (CSharpier owns
+     whitespace).
+  2. `dotnet format VoiceTypingToggle.slnx style --include ${staged}` and
+     `dotnet format VoiceTypingToggle.slnx analyzers --include ${staged}`
+     apply style and analyzer fixes only; whitespace is skipped, following
+     the CSharpier docs' recommendation for running dotnet format alongside
+     CSharpier.
   3. `git add ${staged}` re-stages the formatted files.
 - Fail closed: a nonzero exit from any task blocks the commit.
 - Husky.Net manages the git hooks path; `git config core.hooksPath` is local
@@ -48,7 +55,7 @@ formatting is sufficient afterwards.
 ## Acceptance Criteria
 
 - `.editorconfig` matches the source URL except for the removed file-header
-  rule lines.
+  rule lines and the added IDE0055 suppression.
 - A commit containing unformatted staged `.cs` files lands with those files
   formatted (CSharpier first, then `dotnet format`), and the formatted content
   is part of the commit.
@@ -59,15 +66,18 @@ formatting is sufficient afterwards.
   `dotnet test VoiceTypingToggle.slnx` pass with warnings treated as errors.
 - Formatting is idempotent: running CSharpier twice produces no diff on the
   second run.
-- CI fails when any committed `.cs` file drifts from CSharpier or `dotnet
-  format` (checked on every PR and push to main).
+- CI fails when any committed `.cs` file drifts from CSharpier, `dotnet
+  format style`, or `dotnet format analyzers` (checked on every PR and push
+  to main); whitespace-only drift is not enforced by dotnet format because
+  CSharpier owns whitespace.
 - No node/npm dependency; Husky.Net and CSharpier are dotnet local tools.
 
 ## Verification
 
 - Stable commands: `dotnet build VoiceTypingToggle.slnx`,
-  `dotnet test VoiceTypingToggle.slnx`, `dotnet csharpier .` run twice
-  (second run must be a no-op), `dotnet husky run --group pre-commit`.
+  `dotnet test VoiceTypingToggle.slnx`, `dotnet csharpier format .` run twice
+  (second run must be a no-op), `dotnet format style` and
+  `dotnet format analyzers` verify runs, `dotnet husky run --group pre-commit`.
 - End-to-end hook checks in the worktree: stage deliberately unformatted code
   and commit to confirm auto-formatting; commit non-C# changes only to confirm
   the hook no-ops; temporarily break a task to confirm the commit is blocked.
