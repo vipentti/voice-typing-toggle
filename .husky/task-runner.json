@@ -2,31 +2,10 @@
    "$schema": "https://alirezanet.github.io/Husky.Net/schema.json",
    "tasks": [
       {
-         "name": "csharpier",
+         "name": "csharpier-check",
          "group": "pre-commit",
          "command": "dotnet",
-         "args": ["csharpier", "format", "${staged}"],
-         "include": ["**/*.cs"]
-      },
-      {
-         "name": "dotnet-format-style",
-         "group": "pre-commit",
-         "command": "dotnet",
-         "args": ["format", "VoiceTypingToggle.slnx", "style", "--include", "${staged}"],
-         "include": ["**/*.cs"]
-      },
-      {
-         "name": "dotnet-format-analyzers",
-         "group": "pre-commit",
-         "command": "dotnet",
-         "args": ["format", "VoiceTypingToggle.slnx", "analyzers", "--include", "${staged}"],
-         "include": ["**/*.cs"]
-      },
-      {
-         "name": "re-add-formatted",
-         "group": "pre-commit",
-         "command": "git",
-         "args": ["add", "${staged}"],
+         "args": ["csharpier", "check", "${staged}"],
          "include": ["**/*.cs"]
       }
    ]
