@@ -944,6 +944,14 @@ sealed partial class Program
                 return;
             }
             ShutdownPolicy.Cancel();
+            if (!ListeningEnabled && FocusTimerRunning)
+            {
+                // The drain re-armed the focus-watch timer while listening was
+                // disabled; the disabled state owns no timers, so kill it again.
+                _ = KillTimer(AppWindow, TimerId);
+                FocusTimerRunning = false;
+                TraceAction("disabled-cancel-timer-killed");
+            }
             MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.", "Voice Typing Toggle", 0x10);
             return;
         }
