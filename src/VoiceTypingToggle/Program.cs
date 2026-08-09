@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-// VoiceTypingToggle: background utility. Ctrl+Alt+H toggles English voice typing:
+// VoiceTypingToggle: background utility. Ctrl+Alt+H (tray-gated, off by default) toggles English voice typing:
 //   Idle -> save foreground layout, switch to en-US, Win+H (Voice Typing opens)
 //   Dictating -> Win+H (closes), restore saved layout to foreground at that time
 sealed partial class Program
@@ -49,6 +49,8 @@ sealed partial class Program
     const uint MenuInterceptWinHId = 2;
     const uint MenuEnterCloseId = 3;
     const uint MenuSpaceCloseId = 4;
+    const uint MenuListeningId = 5;
+    const uint MenuHotkeyId = 6;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -370,6 +372,9 @@ sealed partial class Program
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
     private static bool WinHHoldArmed; // injected right-Win is down: shutdown must release it
+    private static bool ListeningEnabled = true;     // tray-gated master: hotkey, hook, and timers run only while true
+    private static bool HotkeyEnabled;               // tray-gated: Ctrl+Alt+H toggle hotkey (off by default, session-only)
+    private static bool InterceptWinHEnabled = true; // tray-gated: physical Win+H race interception (intent; the hook may fail to install)
     private static bool EnterCloseEnabled = true;  // tray-gated: close dictation on physical Enter while dictating
     private static bool SpaceCloseEnabled = true;  // tray-gated: close dictation on physical Space while dictating
     private static readonly ShutdownDecision ShutdownPolicy = new();
@@ -437,13 +442,9 @@ sealed partial class Program
             return 1;
         }
 
-        if (!RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
-        {
-            MessageBoxW(0, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
-                "Voice Typing Toggle", 0x10);
-            return 1;
-        }
-        HotkeyRegistered = true;
+        // The Ctrl+Alt+H hotkey is tray-gated and off by default (session-only):
+        // it is registered only when "Enable Ctrl+Alt+H" is checked, so an
+        // in-use combination is never a fatal startup condition.
         VoiceUiHook = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
         FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
         // Physical Win+H observation (race interception): installed by default
@@ -614,6 +615,15 @@ sealed partial class Program
         // before the dynamic status is rendered.
         if (Core.IsDictating)
         {
+            if (WinHHoldArmed)
+            {
+                // Resolve an in-flight Win+H hold while the core is still
+                // dictating: the gesture completes without Escape and the
+                // injected Win is released, so no hold is ever armed when a
+                // menu command runs and no Escape is sent into the window
+                // that replaced the dictation target.
+                CompleteWinHInjection();
+            }
             _ = RestoreFocus(AppWindow);
             Core.CheckDictationFocus();
         }
@@ -627,15 +637,19 @@ sealed partial class Program
         try
         {
             uint informationalFlags = MfString | MfDisabled | MfGrayed;
+            uint subToggleFlags = ListeningEnabled ? MfString : MfString | MfGrayed | MfDisabled;
             _ = AppendMenuW(menu, informationalFlags, 0, "Voice Typing Toggle");
             _ = AppendMenuW(menu, informationalFlags, 0, $"Status: {CurrentStatus}");
             _ = AppendMenuW(menu, informationalFlags, 0, "Hotkey: Ctrl+Alt+H");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
-            // Session-only interception and close-key toggles; the checkmarks
-            // reflect the live state.
-            _ = AppendMenuW(menu, MfString | (KeyboardHook != 0 ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
-            _ = AppendMenuW(menu, MfString | (EnterCloseEnabled ? MfChecked : MfUnchecked), MenuEnterCloseId, "Close dictation on Enter");
-            _ = AppendMenuW(menu, MfString | (SpaceCloseEnabled ? MfChecked : MfUnchecked), MenuSpaceCloseId, "Close dictation on Space");
+            // Session-only toggles; the checkmarks reflect the live intent
+            // state. While listening is disabled the sub-toggles are grayed
+            // and unselectable but keep their intent for the re-enable.
+            _ = AppendMenuW(menu, MfString | (ListeningEnabled ? MfChecked : MfUnchecked), MenuListeningId, "Enable listening");
+            _ = AppendMenuW(menu, subToggleFlags | (HotkeyEnabled ? MfChecked : MfUnchecked), MenuHotkeyId, "Enable Ctrl+Alt+H");
+            _ = AppendMenuW(menu, subToggleFlags | (InterceptWinHEnabled ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
+            _ = AppendMenuW(menu, subToggleFlags | (EnterCloseEnabled ? MfChecked : MfUnchecked), MenuEnterCloseId, "Close dictation on Enter");
+            _ = AppendMenuW(menu, subToggleFlags | (SpaceCloseEnabled ? MfChecked : MfUnchecked), MenuSpaceCloseId, "Close dictation on Space");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
             _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
 
@@ -646,6 +660,14 @@ sealed partial class Program
             if (command == MenuExitId)
             {
                 RequestOrderlyShutdown(ShutdownKind.UserExit);
+            }
+            else if (command == MenuListeningId)
+            {
+                ToggleListening();
+            }
+            else if (command == MenuHotkeyId)
+            {
+                ToggleHotkey();
             }
             else if (command == MenuInterceptWinHId)
             {
@@ -668,21 +690,132 @@ sealed partial class Program
         }
     }
 
-    static void ToggleInterception()
+    // Every disable path guards with this helper: a session can never be
+    // stranded. In normal operation the tray-menu heal already ended the
+    // session before a command is selected, so the canonical Escape-first stop
+    // runs only in the defensive case. No hold handling is needed: an
+    // in-flight hold is resolved at tray-menu open while the core is still
+    // dictating, so WinHHoldArmed is false whenever a toggle runs.
+    static void AbortActiveSessionIfAny()
     {
-        if (KeyboardHook != 0)
+        if (Core.IsDictating)
         {
-            UninstallKeyboardHook(); // native Win+H behavior returns untouched
+            TraceAction("toggle-abort-stop");
+            Core.StopDictation();
+        }
+    }
+
+    static void ToggleListening()
+    {
+        if (ListeningEnabled)
+        {
+            AbortActiveSessionIfAny();
+            ListeningEnabled = false;
+            if (HotkeyRegistered)
+            {
+                _ = UnregisterHotKey(AppWindow, HotkeyId);
+                HotkeyRegistered = false;
+            }
+            if (KeyboardHook != 0)
+            {
+                UninstallKeyboardHook();
+            }
+            if (FocusTimerRunning)
+            {
+                _ = KillTimer(AppWindow, TimerId);
+                FocusTimerRunning = false;
+            }
+            _ = KillTimer(AppWindow, WinHHoldTimerId);
+            TraceAction("listening-off");
         }
         else
         {
-            TryInstallKeyboardHook();
+            // Re-enable restores state per checkbox intent in dependency
+            // order: focus-watch timer, hook, then hotkey.
+            ListeningEnabled = true;
+            FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+            if (InterceptWinHEnabled && KeyboardHook == 0)
+            {
+                TryInstallKeyboardHook(); // failure clears the intercept intent (nonfatal)
+            }
+            if (HotkeyEnabled && !HotkeyRegistered && !RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
+            {
+                // All-or-nothing: roll the just-applied hook and timer back
+                // and stay disabled; the checkbox shows unchecked, matching
+                // the actual registration state.
+                HotkeyEnabled = false;
+                ListeningEnabled = false;
+                if (KeyboardHook != 0)
+                {
+                    UninstallKeyboardHook();
+                }
+                if (FocusTimerRunning)
+                {
+                    _ = KillTimer(AppWindow, TimerId);
+                    FocusTimerRunning = false;
+                }
+                MessageBoxW(AppWindow, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
+                    "Voice Typing Toggle", 0x10);
+                TraceAction("listening-reenable-hotkey-failed");
+            }
+            if (ListeningEnabled)
+            {
+                TraceAction("listening-on");
+            }
         }
         UpdateTrayTooltip();
         Trace.Flush();
     }
 
-    static string CurrentStatus => Core.IsDictating ? "Dictating" : "Idle";
+    static void ToggleHotkey()
+    {
+        if (HotkeyEnabled)
+        {
+            AbortActiveSessionIfAny();
+            HotkeyEnabled = false;
+            if (HotkeyRegistered)
+            {
+                _ = UnregisterHotKey(AppWindow, HotkeyId);
+                HotkeyRegistered = false;
+            }
+            TraceAction("hotkey-off");
+        }
+        else if (RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
+        {
+            HotkeyRegistered = true;
+            HotkeyEnabled = true;
+            TraceAction("hotkey-on");
+        }
+        else
+        {
+            // Direct registration failure: item stays unchecked, listening
+            // and all other listening machinery stay as they are.
+            MessageBoxW(AppWindow, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
+                "Voice Typing Toggle", 0x10);
+            TraceAction("hotkey-register-failed");
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
+    }
+
+    static void ToggleInterception()
+    {
+        if (KeyboardHook != 0)
+        {
+            UninstallKeyboardHook(); // native Win+H behavior returns untouched
+            InterceptWinHEnabled = false;
+            TraceAction("intercept-off");
+        }
+        else
+        {
+            InterceptWinHEnabled = true;
+            TryInstallKeyboardHook(); // failure clears the intent again (nonfatal)
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
+    }
+
+    static string CurrentStatus => !ListeningEnabled ? "Disabled" : Core.IsDictating ? "Dictating" : "Idle";
 
     static string TrayTooltip => $"Voice Typing Toggle: {CurrentStatus}";
 
@@ -761,6 +894,14 @@ sealed partial class Program
     {
         ShutdownAction initialAction = ShutdownPolicy.Begin(reason, Core.IsDictating, Core.StopConfirmPending);
         TraceAction(reason == ShutdownKind.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
+        if (initialAction == ShutdownAction.Wait && !FocusTimerRunning)
+        {
+            // Listening may be disabled (focus-watch timer killed). A pending
+            // stop confirmation drains only from that timer, so re-arm it for
+            // the shutdown drain; CompleteShutdown kills it as usual.
+            FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+            TraceAction("shutdown-watch-timer-rearmed");
+        }
         if (Core.IsDictating)
         {
             Core.Toggle(); // normal stop keeps the watchdog armed for late popups
@@ -1173,6 +1314,7 @@ sealed partial class Program
         KeyboardHook = SetWindowsHookExW(WhKeyboardLl, KeyboardProcDelegate, 0, 0);
         if (KeyboardHook == 0)
         {
+            InterceptWinHEnabled = false; // intent cleared: checkbox unchecked, physical Win+H stays native
             TraceAction("hook-install-failed");
             return false;
         }
