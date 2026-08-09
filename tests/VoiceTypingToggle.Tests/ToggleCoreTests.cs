@@ -748,6 +748,41 @@ public class ToggleCoreTests
     }
 
     [Fact]
+    public void FailedOldTargetRestoreDefersNewSession()
+    {
+        const nint other = 0xABCD;
+        var requests = new List<(nint hwnd, nint hkl)>();
+        var layouts = new Dictionary<uint, nint> { [7] = FiFi, [8] = FiFi };
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => Target,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            SendWinH = () => { },
+            SendEscape = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle(); // session A on Target: FiFi -> EnUs
+        core.StopDictationNative();
+        core.GetForeground = () => other;
+        var requestLayout = core.RequestLayout;
+        core.RequestLayout = (h, hkl) => hkl == FiFi ? false : requestLayout(h, hkl); // the old target's restore fails
+        core.Toggle(); // the new session must not be accepted on top of an unrestored old one
+        Assert.False(core.IsDictating);
+
+        core.RequestLayout = requestLayout; // the timer's retry can now succeed
+        core.CheckDictationFocus(); // tick 1: settle
+        core.CheckDictationFocus(); // tick 2: pending restore still armed -> runs
+
+        Assert.Equal(FiFi, layouts[7]); // the old target's original layout eventually returns
+        Assert.False(core.IsDictating);
+    }
+
+    [Fact]
     public void FailedRestartLeavesPendingNativeStopArmed()
     {
         const nint other = 0xABCD;

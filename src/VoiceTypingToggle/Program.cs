@@ -524,7 +524,14 @@ sealed partial class Program
                 // Async Win+H gesture, step 1: the loop is free (no nested
                 // message pump), the low-level hook stays responsive, and the
                 // injected right-Win chains to the shell immediately.
-                SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
+                if (!SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true))
+                {
+                    // Win-down was never injected: no gesture is armed, so no
+                    // hold timer may fire H/Win-up/Escape into the foreground.
+                    TraceAction("winh-win-down-failed");
+                    Core.RestoreIfDictating();
+                    return 0;
+                }
                 TraceAction("winh-win-down");
                 WinHHoldArmed = true;
                 if (SetTimer(AppWindow, WinHHoldTimerId, WinHHoldMs, 0) == 0)
@@ -933,19 +940,31 @@ sealed partial class Program
     // releasing Win is mandatory: a bare Win-up opens the Start menu. On
     // abort the H opens the bar (or toggles a natively opened one) and the
     // Escape closes it again; a stray Escape reaching the app matches the
-    // existing stop-before-launch semantics.
+    // existing stop-before-launch semantics. Every step is checked: on any
+    // injection failure the remaining releases are attempted best-effort (a
+    // logically held Win is worse than a stray Start), and the session is
+    // rolled back.
     static void CompleteWinHInjection(bool forceClose = false)
     {
         WinHHoldArmed = false;
         _ = KillTimer(AppWindow, WinHHoldTimerId);
-        // Always finish the gesture with H before releasing Win: a bare Win-up
-        // opens the Start menu. When the session ended during the hold, the H
-        // opens the bar (or toggles a natively opened one) and the Escape
-        // closes it again; a stray Escape reaching the app matches the
-        // existing stop-before-launch semantics.
-        SendKey(0, 0x23, up: false, useScanCode: true);
-        SendKey(0, 0x23, up: true, useScanCode: true);
-        SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+        bool hDown = SendKey(0, 0x23, up: false, useScanCode: true);
+        bool hUp = hDown && SendKey(0, 0x23, up: true, useScanCode: true);
+        bool winUp = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+        if (!hDown || !hUp || !winUp)
+        {
+            TraceAction("winh-inject-failed");
+            if (!hUp)
+            {
+                _ = SendKey(0, 0x23, up: true, useScanCode: true); // best-effort H release
+            }
+            if (!winUp)
+            {
+                _ = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true); // best-effort Win release
+            }
+            Core.RestoreIfDictating();
+            return;
+        }
         if (forceClose || !Core.IsDictating)
         {
             SendEscape();
@@ -959,12 +978,21 @@ sealed partial class Program
 
     static void SendEscape()
     {
-        SendKey(0, 0x01, up: false, useScanCode: true);
-        SendKey(0, 0x01, up: true, useScanCode: true);
-        TraceAction("escape-sent");
+        if (SendKey(0, 0x01, up: false, useScanCode: true) &&
+            SendKey(0, 0x01, up: true, useScanCode: true))
+        {
+            TraceAction("escape-sent");
+        }
+        else
+        {
+            TraceAction("escape-inject-failed");
+        }
     }
 
-    static void SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
+    // Returns true when SendInput accepted the event. No core-state side
+    // effects here: the Win+H gesture owns its rollback, and the stop path
+    // restores unconditionally after its settle regardless of this result.
+    static bool SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
     {
         uint flags = (up ? KeyeventfKeyUp : 0) | (extended ? KeyeventfExtendedKey : 0) | (useScanCode ? KeyeventfScanCode : 0);
         var input = new INPUT
@@ -983,8 +1011,9 @@ sealed partial class Program
         if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
         {
             TraceAction("send-input-failed");
-            Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
+            return false;
         }
+        return true;
     }
 
     // Physical Win+H observation (WH_KEYBOARD_LL). The hook runs BEFORE the

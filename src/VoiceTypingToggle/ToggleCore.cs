@@ -85,6 +85,13 @@ internal sealed class ToggleCore
             return; // stay Idle; a pending native-stop restore remains armed
         }
         SavedLayout = ConsumePendingNativeStop(hwnd, current);
+        if (nativeStopRestorePending)
+        {
+            // The old session's restore could not complete; it stays armed for
+            // the timer to retry. Do not start on top of an unrestored session.
+            Trace("restart-deferred");
+            return;
+        }
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
@@ -127,6 +134,11 @@ internal sealed class ToggleCore
             return; // stay Idle; no injected Win+H; native press proceeds; pending restore remains armed
         }
         SavedLayout = ConsumePendingNativeStop(hwnd, current);
+        if (nativeStopRestorePending)
+        {
+            Trace("restart-deferred"); // the old restore stays armed for the timer
+            return;
+        }
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false;
@@ -159,22 +171,26 @@ internal sealed class ToggleCore
     // Same target: the snapshot's original layout becomes the new session's
     // restore baseline, because the thread is still on English. Different
     // target: the old target's layout is restored first, without stealing
-    // focus, and the new target's own pre-switch layout is the baseline.
+    // focus; if that restore fails, the snapshot stays armed for the timer to
+    // retry and the caller must not accept the new session (checked via the
+    // still-pending flag).
     nint ConsumePendingNativeStop(nint hwnd, nint current)
     {
         if (!nativeStopRestorePending)
         {
             return current;
         }
-        nativeStopRestorePending = false;
         if (stopConfirmWindow == hwnd)
         {
+            nativeStopRestorePending = false;
             return stopConfirmLayout; // carry the original layout forward
         }
-        if (stopConfirmWindow != 0)
+        if (stopConfirmWindow != 0 && !RestoreLayout(stopConfirmWindow, stopConfirmLayout))
         {
-            RestoreLayout(stopConfirmWindow, stopConfirmLayout);
+            Trace("pending-restore-failed"); // snapshot stays armed; the timer retries
+            return current;
         }
+        nativeStopRestorePending = false;
         return current;
     }
 
