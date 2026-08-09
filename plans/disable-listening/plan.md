@@ -20,9 +20,9 @@ restores focus to the saved window.
   uninstalls the keyboard hook, and kills the focus-watch timer and the
   Win+H-hold timer. Unchecked while Dictating runs the shared abort helper
   (canonical Escape-first stop `ToggleCore.StopDictation`: Escape, settle,
-  restore saved window and layout, plus completing any in-flight injected
-  Win+H gesture per the in-flight hold completion rule below) before tearing
-  the listening machinery down; see the
+  restore saved window and layout; an in-flight Win+H hold is already
+  resolved by the tray-menu ordering rule below before any toggle runs)
+  before tearing the listening machinery down; see the
   tray-menu-during-dictation rule below for when that path actually runs.
   The application keeps running with the tray icon; the menu status line and
   tooltip show "Disabled".
@@ -49,44 +49,47 @@ restores focus to the saved window.
   unchecked, `HotkeyEnabled` ends false, and `ListeningEnabled` is unchanged
   (all other listening machinery stays as it is). Unchecking while Dictating
   runs the shared abort helper first (normally the session already ended via
-  the tray-menu focus-loss rule below), then unregisters. Unchecking while a
-  Win+H-hold gesture is armed completes that gesture per the in-flight hold
-  completion rule below, exactly like the master toggle.
-- Tray menu during dictation (existing behavior, preserved): `ShowTrayMenu`
-  deliberately ends an active session before rendering: it restores focus to
-  the app window and runs `CheckDictationFocus`, whose focus-loss self-heal
-  closes the bar (the bar auto-closes on focus change), restores the saved
-  layout, and returns the core to Idle. Menu commands are therefore selected
-  while the core is Idle in normal operation, and the Escape-first stop in
-  the shared abort helper is the defensive path for the case where the heal
-  did not run (for example the foreground stayed on the saved window). Toggle
+  the tray-menu focus-loss rule below), then unregisters. An in-flight
+  Win+H-hold gesture is already resolved at tray-menu open (see below), so
+  an uncheck command never runs with a hold armed.
+- Tray menu during dictation (existing behavior preserved, one added step):
+  `ShowTrayMenu` deliberately ends an active session before rendering. While
+  `Core.IsDictating` it first resolves an in-flight Win+H hold
+  (`WinHHoldArmed`: run `CompleteWinHInjection()`, which completes the
+  gesture while the core is still dictating and therefore sends no Escape
+  and never leaves the injected Win held), then restores focus to the app
+  window and runs `CheckDictationFocus`, whose focus-loss self-heal closes
+  the bar (the bar auto-closes on focus change), restores the saved layout,
+  and returns the core to Idle. With this ordering the hold is always
+  resolved while the core is dictating: `WinHHoldArmed` is false by the time
+  any menu command runs, so no Idle-hold path exists. A bar that opens late
+  from the completed gesture is closed by the existing launch-race watchdog:
+  the heal arms `StopConfirmPending` while the session is still in its
+  launch window, and the `OnVoiceUiShown` SHOW-event corrective pass closes
+  the bar with the usual bounds. Menu commands are therefore selected while
+  the core is Idle in normal operation, and the Escape-first stop in the
+  shared abort helper is the defensive path for the case where the heal did
+  not run (for example the foreground stayed on the saved window). Toggle
   handlers always guard with the abort helper so a disable can never strand
   an active session, regardless of how the session state was reached. The
   menu status line is rendered after the heal and shows "Idle" when a
   dictation session was ended by opening the menu.
 - In-flight Win+H hold completion: `CompleteWinHInjection()` as it exists
-  today sends a closing Escape when `Core.IsDictating` is false, which is
-  exactly reachable when a hold is armed and the tray-menu heal already
-  returned the core to Idle. Toggle handlers therefore do not call it
-  unconditionally. The defined Program-level path branches on the core
-  state: while the core is still dictating, the gesture completes as today
-  (H down/up, Win up; no Escape while dictating) and the abort helper's
-  Escape-first stop then closes the bar, with the existing stop-before-launch
-  exposure against the dictation target. While the core is already Idle, the
-  key sequence completes (H down/up, Win up; releasing Win without the H
-  would open the Start menu) but the immediate closing Escape is skipped,
-  because the foreground window is no longer the dictation target. Program
-  does not arm the stop-confirmation watchdog (ArmStopConfirm is private in
-  `ToggleCore`, which stays untouched) and does not correct from
+  today sends a closing Escape when `Core.IsDictating` is false, so a hold
+  must never be resolved from a state where the core is already Idle. The
+  hold is therefore resolved at the start of `ShowTrayMenu`'s dictating
+  branch, while the core is still dictating: the gesture completes as today
+  (H down/up, Win up; no Escape while dictating; the hold timer is killed
+  and the injected Win is never left held), and the subsequent focus-loss
+  self-heal ends the session. A bar that opens late from the completed
+  gesture is closed by the existing launch-race watchdog: the heal arms
+  `StopConfirmPending` while the session is still in its launch window, and
+  the `OnVoiceUiShown` SHOW-event corrective pass closes it. Program never
+  arms the stop-confirmation watchdog itself (`ArmStopConfirm` is private in
+  `ToggleCore`, which stays untouched) and never corrects from
   timer-observed visibility (that correction runs only under the private
-  native-stop restore path). The tray-heal during the launch window already
-  arms `StopConfirmPending` (the session is still in its launch window while
-  the hold is armed), so the bar reopened by the completed gesture is closed
-  by the existing `OnVoiceUiShown` SHOW-event corrective machinery with its
-  usual bounds. When the watchdog is not pending (heal after launch
-  confirmation), no correction is reachable and a reopened bar without
-  observable evidence stays open under the documented positive-only residual
-  limitation.
+  native-stop restore path). No Idle-hold path exists, so no bar can remain
+  open after a disable from a hold-armed state.
 - Checkbox state becomes intent flags in `Program.cs`:
   `ListeningEnabled` (default true), `HotkeyEnabled` (default false),
   `InterceptWinHEnabled` (default true). The existing `KeyboardHook != 0`
@@ -129,31 +132,24 @@ restores focus to the saved window.
 
 All new state lives in `Program.cs` next to the existing tray menu and
 hotkey code; the message loop, `ToggleCore`, and the hook callback keep their
-current structure. `ShowTrayMenu` keeps its existing dictation handling
-unchanged (see the tray-menu-during-dictation rule in Scope): an active
-session ends through the focus-loss self-heal before the menu renders, so
-commands are selected while the core is Idle in normal operation. A shared
+current structure. `ShowTrayMenu` keeps its focus-loss recovery ordering and gains one step at
+the start of its dictating branch (see the tray-menu-during-dictation rule
+in Scope): while `Core.IsDictating`, resolve an in-flight Win+H hold
+(`WinHHoldArmed`: `CompleteWinHInjection()` while still dictating, no
+Escape) before restoring focus to the app window and running
+`CheckDictationFocus`. An active
+session therefore ends through the focus-loss self-heal before the menu
+renders, commands are selected while the core is Idle in normal operation,
+and no hold is ever armed when a command runs. A shared
 abort helper guards every disable path for the case where a session is still
 active when a toggle runs:
 
-1. If `WinHHoldArmed`, run the in-flight hold completion path: while the
-   core is still dictating, `CompleteWinHInjection()` as today (gesture
-   completed, no Escape while dictating; the following Escape-first stop
-   closes the bar). While the core is already Idle, complete the key
-   sequence (H down/up, Win up) without the immediate closing Escape. Do not
-   arm the watchdog from Program (ArmStopConfirm is private in `ToggleCore`,
-   which stays untouched) and do not correct from timer-observed visibility
-   (that correction runs only under the private native-stop restore path):
-   rely on the `StopConfirmPending` already armed by the tray-heal during
-   the launch window, so the bar reopened by the completed gesture is closed
-   by the existing `OnVoiceUiShown` SHOW-event corrective machinery; when
-   the watchdog is not pending, no correction is reachable and the
-   positive-only residual limitation applies. An injected Win key is never
-   left held and no Escape is sent into the window that replaced the
-   dictation target.
-2. If `Core.IsDictating`, run `Core.StopDictation()` (the same Escape-first
+1. If `Core.IsDictating`, run `Core.StopDictation()` (the same Escape-first
    stop the close-key path uses), which restores the saved window and layout.
-3. Apply the disable (unregister hotkey and/or uninstall hook, kill timers as
+   No hold handling is needed here: an in-flight hold is resolved at
+   tray-menu open while the core is still dictating, so `WinHHoldArmed` is
+   false whenever a toggle runs, and an injected Win key is never left held.
+2. Apply the disable (unregister hotkey and/or uninstall hook, kill timers as
    applicable) and update tooltip, menu status, and trace.
 
 Re-enable applies the intents in dependency order: start the focus-watch
@@ -223,19 +219,16 @@ them; their stored intent values still drive the restore on re-enable.
   re-armed focus-watch timer drains the watchdog and shutdown completes or
   cancels under the existing semantics instead of stalling.
 - A disable requested while a Win+H-hold gesture is armed never leaves an
-  injected Win key held. While the core is still dictating, the gesture
-  completes as today and the session ends with the Escape-first stop (the
-  Escape targets the dictation app, the existing stop-before-launch
-  exposure). While the core is already Idle (hold armed, session healed by
-  the tray-menu focus loss), the key sequence completes without an immediate
-  closing Escape, and the bar opened by the completed gesture is closed only
-  on positive evidence (the `OnVoiceUiShown` SHOW event only; Program never
-  arms the watchdog and never corrects from timer-observed visibility, both
-  being private to `ToggleCore` which stays untouched) through
-  the watchdog-armed corrective pass with the usual bounds; when the
-  watchdog is not pending, no correction is reachable; a bar without
-  observable evidence is the documented positive-only residual limitation.
-  No Escape is sent into the window that replaced the dictation target.
+  injected Win key held and never leaves Voice Typing open after the
+  disable: opening the tray menu resolves the hold first, while the core is
+  still dictating (the gesture completes without Escape, the hold timer is
+  killed, the injected Win is released), then the focus-loss self-heal ends
+  the session and arms the launch-race watchdog, so a bar that opens late
+  from the completed gesture is closed by the existing `OnVoiceUiShown`
+  SHOW-event corrective pass with the usual bounds. By the time a toggle
+  runs, the hold is resolved and the core is Idle; the disable therefore
+  applies to an inert application and no Escape is sent into the window
+  that replaced the dictation target.
 - Checking "Intercept Win+H" when hook installation fails (direct check or
   master re-enable) keeps listening enabled, clears `InterceptWinHEnabled`
   (checkbox unchecked), and leaves physical Win+H native; the failure is
@@ -275,14 +268,14 @@ them; their stored intent values still drive the restore on re-enable.
   drains the watchdog and shutdown completes or cancels under the existing
   semantics, never stalls), Enter and Space close behavior and stop-flash
   watchdog behavior with listening active after a disable/re-enable cycle,
-  during an in-flight Win+H hold with the core still dictating (gesture
-  completes, Escape-first stop, no stuck Win) and with the core already
-  healed Idle (start dictation, open the tray menu within the ~500 ms hold
-  window so the heal returns the core to Idle while the hold is still armed,
-  then disable: injected keys complete without an immediate Escape, no stuck
-  Win, no Escape in the window that replaced the dictation target, and the
-  bar is closed on positive evidence or expires under the documented
-  positive-only limitation), repeated toggle cycles, focus changes, and shutdown restoration. Session-only reset: change
+  during an in-flight Win+H hold (start dictation, then open the tray menu
+  within the ~500 ms hold window: the hold is resolved at menu open while
+  the core is still dictating, the gesture completes without an Escape and
+  without a stuck Win, the focus-loss heal then ends the session and
+  restores the saved layout, a bar that opens late from the completed
+  gesture is closed by the existing launch-race watchdog via `OnVoiceUiShown`,
+  and disabling afterwards leaves nothing open and everything inert, with no
+  Escape in the window that replaced the dictation target), repeated toggle cycles, focus changes, and shutdown restoration. Session-only reset: change
   checkbox intents (for example enable "Enable Ctrl+Alt+H" and disable
   listening), restart the application, and verify every checkbox returns to
   its documented default (hotkey unchecked, listening and Intercept Win+H
