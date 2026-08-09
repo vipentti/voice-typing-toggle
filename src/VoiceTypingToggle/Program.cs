@@ -10,6 +10,9 @@ sealed partial class Program
     const uint WmHotkey = 0x0312;
     const uint WmTimer = 0x0113;
     const uint WmQueryEndSession = 0x0011;
+    const uint WmNull = 0x0000;
+    const uint WmContextMenu = 0x007B;
+    const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
     const uint ModAlt = 0x0001;
@@ -21,11 +24,22 @@ sealed partial class Program
     const uint TrayIconId = 1;
     const uint NimAdd = 0x00000000;
     const uint NimDelete = 0x00000002;
+    const uint NimModify = 0x00000001;
+    const uint NimSetFocus = 0x00000003;
     const uint NimSetVersion = 0x00000004;
     const uint NifMessage = 0x00000001;
     const uint NifIcon = 0x00000002;
+    const uint NifTip = 0x00000004;
+    const uint NifShowTip = 0x00000080;
     const uint NotifyIconVersion4 = 4;
     const nint ApplicationIconResourceId = 32512;
+    const uint MfString = 0x00000000;
+    const uint MfDisabled = 0x00000002;
+    const uint MfGrayed = 0x00000001;
+    const uint MfSeparator = 0x00000800;
+    const uint TpmRightButton = 0x0002;
+    const uint TpmReturnCommand = 0x0100;
+    const uint MenuExitId = 1;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -151,6 +165,34 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     private static partial void PostQuitMessage(int nExitCode);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostMessageW(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial nint CreatePopupMenu();
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", EntryPoint = "AppendMenuW", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AppendMenuW(nint hMenu, uint uFlags, nuint uIDNewItem, string? lpNewItem);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial uint TrackPopupMenu(nint hMenu, uint uFlags, int x, int y, int nReserved, nint hWnd, nint prcRect);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyMenu(nint hMenu);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetCursorPos(out POINT lpPoint);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -380,17 +422,26 @@ sealed partial class Program
             case WmHotkey when wParam == HotkeyId && !ShutdownRequested:
                 TraceAction("hotkey");
                 Core.Toggle();
+                UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
             case WmTimer when wParam == TimerId:
                 Core.CheckDictationFocus();
+                UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
             case WmQueryEndSession:
                 TraceAction("query-end-session");
                 Core.RestoreIfDictating();
+                UpdateTrayTooltip();
                 Trace.Flush();
                 return 1; // allow shutdown
+            case WmTrayIcon when !ShutdownRequested:
+                HandleTrayIconMessage(wParam, lParam);
+                return 0;
+            case WmContextMenu when !ShutdownRequested:
+                ShowTrayMenu(PointFromContextMenu(lParam));
+                return 0;
         }
         if (msg == TaskbarCreatedMessage && !ShutdownRequested)
         {
@@ -402,6 +453,84 @@ sealed partial class Program
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
+    static void HandleTrayIconMessage(nint wParam, nint lParam)
+    {
+        uint notification = (uint)(ulong)lParam & 0xFFFF;
+        if (notification == WmRButtonUp || notification == WmContextMenu)
+        {
+            // Overflow-hosted icons can report an anchor that differs from the
+            // actual pointer. The current cursor reliably gives the requested
+            // mouse location for both right-click notification variants.
+            ShowTrayMenu(PointFromContextMenu(-1));
+        }
+        // All other notification messages, including left-click and double-click,
+        // intentionally remain inert.
+    }
+
+    static POINT PointFromPackedCoordinates(nint packed)
+    {
+        long value = packed;
+        return new POINT
+        {
+            x = (short)(value & 0xFFFF),
+            y = (short)((value >> 16) & 0xFFFF),
+        };
+    }
+
+    static POINT PointFromContextMenu(nint lParam)
+    {
+        if (lParam != -1)
+        {
+            return PointFromPackedCoordinates(lParam);
+        }
+        return GetCursorPos(out POINT point) ? point : default;
+    }
+
+    static void ShowTrayMenu(POINT point)
+    {
+        // A menu activation deliberately moves focus away from the dictation
+        // target. Let the existing focus-loss path end and restore that session
+        // before the dynamic status is rendered.
+        if (Core.IsDictating)
+        {
+            _ = RestoreFocus(AppWindow);
+            Core.CheckDictationFocus();
+        }
+        UpdateTrayTooltip();
+
+        nint menu = CreatePopupMenu();
+        if (menu == 0)
+        {
+            return;
+        }
+        try
+        {
+            uint informationalFlags = MfString | MfDisabled | MfGrayed;
+            _ = AppendMenuW(menu, informationalFlags, 0, "Voice Typing Toggle");
+            _ = AppendMenuW(menu, informationalFlags, 0, $"Status: {CurrentStatus}");
+            _ = AppendMenuW(menu, informationalFlags, 0, "Hotkey: Ctrl+Alt+H");
+            _ = AppendMenuW(menu, MfSeparator, 0, null);
+            _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
+
+            _ = SetForegroundWindow(AppWindow);
+            uint command = TrackPopupMenu(menu, TpmRightButton | TpmReturnCommand, point.x, point.y, 0, AppWindow, 0);
+            _ = PostMessageW(AppWindow, WmNull, 0, 0);
+            ReturnFocusToNotificationArea();
+            if (command == MenuExitId)
+            {
+                RequestOrderlyShutdown();
+            }
+        }
+        finally
+        {
+            _ = DestroyMenu(menu);
+        }
+    }
+
+    static string CurrentStatus => Core.IsDictating ? "Dictating" : "Idle";
+
+    static string TrayTooltip => $"Voice Typing Toggle: {CurrentStatus}";
+
     static bool TryAddTrayIcon()
     {
         var data = new NOTIFYICONDATAW
@@ -409,10 +538,10 @@ sealed partial class Program
             cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
             hWnd = AppWindow,
             uID = TrayIconId,
-            uFlags = NifMessage | NifIcon,
+            uFlags = NifMessage | NifIcon | NifTip | NifShowTip,
             uCallbackMessage = WmTrayIcon,
             hIcon = AppIcon,
-            szTip = "Voice Typing Toggle",
+            szTip = TrayTooltip,
             szInfo = string.Empty,
             szInfoTitle = string.Empty,
         };
@@ -430,6 +559,39 @@ sealed partial class Program
 
         _ = ShellNotifyIconW(NimDelete, ref data);
         return false;
+    }
+
+    static void UpdateTrayTooltip()
+    {
+        if (!TrayIconInstalled)
+        {
+            return;
+        }
+        var data = new NOTIFYICONDATAW
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
+            hWnd = AppWindow,
+            uID = TrayIconId,
+            uFlags = NifTip | NifShowTip,
+            szTip = TrayTooltip,
+            szInfo = string.Empty,
+            szInfoTitle = string.Empty,
+        };
+        _ = ShellNotifyIconW(NimModify, ref data);
+    }
+
+    static void ReturnFocusToNotificationArea()
+    {
+        var data = new NOTIFYICONDATAW
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
+            hWnd = AppWindow,
+            uID = TrayIconId,
+            szTip = string.Empty,
+            szInfo = string.Empty,
+            szInfoTitle = string.Empty,
+        };
+        _ = ShellNotifyIconW(NimSetFocus, ref data);
     }
 
     static void ReportTrayIconFailure(bool isRecreation)
@@ -585,6 +747,7 @@ sealed partial class Program
         }
         TraceAction($"popup-show-0x{hwnd:X}");
         Core.OnVoiceUiShown();
+        UpdateTrayTooltip();
         Trace.Flush();
     }
 
