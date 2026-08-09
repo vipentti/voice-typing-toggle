@@ -73,6 +73,14 @@ Add the icon with `NIM_ADD`, select version 4 notification behavior with
 `NIM_DELETE`. Register and handle `TaskbarCreated`, re-adding the icon and
 reapplying its version whenever Explorer recreates the taskbar.
 
+Keep the lifecycle decision that consumes the Boolean `Shell_NotifyIconW`
+result behind a narrow non-Win32 seam. Its production collaborators perform the
+real add or re-add, report a visible error through `MessageBoxW`, and request the
+shared orderly-shutdown coordinator. Route both the initial `NIM_ADD` and the
+`TaskbarCreated` re-add through this same decision point. Tests can then inject a
+false add result without trying to destabilize Explorer or the real notification
+area, while the production P/Invoke remains direct and Native AOT compatible.
+
 Load the committed multi-resolution icon from the executable rather than from a
 sidecar file. Configure it as the executable application icon and verify that
 Native AOT publishing preserves a loadable icon resource in the single-file
@@ -167,8 +175,14 @@ unexpected invisible background process.
   remains running rather than claiming a successful Exit.
 - Restarting Explorer while the utility runs restores exactly one working tray
   icon without restarting the utility.
-- Failure to install or recreate the tray icon produces a visible error and does
-  not leave an invisible background process running.
+- A test-injected initial `NIM_ADD` failure invokes the production-wired visible
+  error path and the shared orderly-shutdown coordinator, completing partial
+  startup cleanup and message-loop termination so no invisible background
+  process remains.
+- After a successful initial add, a test-injected re-add failure on
+  `TaskbarCreated` invokes the same visible error and orderly-shutdown path. Any
+  pending stop confirmation still completes before teardown, and the process
+  does not continue invisibly without its icon.
 - Existing hotkey, layout-switching, focus recovery, failure handling, tracing,
   and non-elevated operation continue to behave as before.
 - Native AOT Release publishing still produces the expected standalone
@@ -184,6 +198,18 @@ Run
 `dotnet publish src\VoiceTypingToggle\VoiceTypingToggle.csproj -c Release`.
 Confirm that the result is a standalone Native AOT executable, that its file
 icon is present, and that launching it does not require a sidecar icon file.
+
+Add controlled automated fault-injection tests at the notification-icon
+lifecycle seam. For initial installation, make the first add return false and
+assert that the visible-error collaborator is invoked exactly once,
+initialization does not continue as a successful tray process, and the shared
+shutdown coordinator reaches its terminal window-destroy and message-loop-exit
+actions. For recreation, make initial add succeed and the next add triggered by
+`TaskbarCreated` fail; assert the same error route is invoked, shutdown is
+requested, existing pending-stop monitoring is retained when applicable, and
+terminal teardown occurs only through the already-covered shutdown completion
+rule. These tests must prove that neither failure path can leave the application
+running invisibly. They do not need to force the real Windows shell API to fail.
 
 Manually verify on Windows:
 
