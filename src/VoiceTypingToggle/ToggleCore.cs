@@ -6,11 +6,12 @@ internal sealed class ToggleCore
     const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
     const int SwitchTimeoutMs = 100; // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint LangEnUs = 0x0409;
+    const uint KlidMask = 0xFFFF0000;
     const int EscapeRetryMs = 30;          // stop-flash: Escape settle; restore lands ~+31-47 ms (tuned; 20/15/10 reopen the bar), see .tmp/stop-flash-findings.md
     const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
     const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
     const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
-    const int NativeStopRestoreTicks = 1;    // ~250 ms at the focus-watch cadence: settle for the native close before restoring
+    const int NativeStopRestoreTicks = 2;    // two timer callbacks, 250-500 ms: the physical close event must reach Windows before focus/layout restore
     const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
@@ -74,11 +75,14 @@ internal sealed class ToggleCore
         {
             return;
         }
+        // A new session supersedes any pending native-stop restore: the stale
+        // snapshot must not restore the previous window/layout during this one.
+        nativeStopRestorePending = false;
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
         // Fail closed: only start voice typing after the English layout is confirmed active.
-        if (current != EnglishLayout &&
+        if (!IsEnglishLayout(current) &&
             (!RequestLayout(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
             return; // stay Idle
@@ -117,9 +121,12 @@ internal sealed class ToggleCore
         {
             return;
         }
+        // Same supersede rule as StartDictation: never restore the previous
+        // native-stop snapshot during a new session.
+        nativeStopRestorePending = false;
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
-        if (current != EnglishLayout &&
+        if (!IsEnglishLayout(current) &&
             (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
             Trace("race-layout-failed");
@@ -392,9 +399,33 @@ internal sealed class ToggleCore
         return WaitForLayout(tid, expected, SwitchTimeoutMs);
     }
 
+    // Any English primary language counts as English for the start decision;
+    // the utility must not switch a thread that is already dictating in some
+    // English variant (the klid of the installed variant may differ).
+    static bool IsEnglishLayout(nint hkl) => ((uint)hkl & 0xFF) == 0x09;
+
     // Pure selection logic: exact en-US first, then any English primary language.
+    // With a preferred keyboard id (klid), an exact en-US on that keyboard wins
+    // over other en-US variants: switching only the language keeps the user's
+    // physical keyboard mapping stable, which matters mid-gesture.
     public static nint SelectEnglishLayout(nint[] layouts, int count)
     {
+        return SelectEnglishLayout(layouts, count, 0);
+    }
+
+    public static nint SelectEnglishLayout(nint[] layouts, int count, uint preferredKlid)
+    {
+        if (preferredKlid != 0)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                uint lang = (uint)layouts[i] & 0xFFFF;
+                if (lang == LangEnUs && ((uint)layouts[i] & KlidMask) == preferredKlid)
+                {
+                    return layouts[i];
+                }
+            }
+        }
         nint fallback = 0;
         for (int i = 0; i < count; i++)
         {

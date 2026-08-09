@@ -12,18 +12,19 @@ sealed partial class Program
     const uint WmQueryEndSession = 0x0011;
     const uint WmNull = 0x0000;
     const uint WmContextMenu = 0x007B;
-    const uint WmQuit = 0x0012;
-    const uint PmRemove = 0x0001;
     const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
     const uint WmCloseKeyStop = WmApp + 2;
+    const uint WmWinHDown = WmApp + 3;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
     const uint WsExToolWindow = 0x00000080;
     const uint WsExNoActivate = 0x08000000;
     const int HotkeyId = 1;
     const int TimerId = 2;
+    const int WinHHoldTimerId = 3;
+    const int WinHHoldMs = 500;
     const uint TrayIconId = 1;
     const uint NimAdd = 0x00000000;
     const uint NimDelete = 0x00000002;
@@ -154,11 +155,6 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "LoadIconW")]
     private static partial nint LoadIconW(nint hInstance, nint lpIconName);
-
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool PeekMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -373,7 +369,7 @@ sealed partial class Program
     private static bool HotkeyRegistered;
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
-    private static bool InHotkeyDispatch; // re-entrancy guard: never dispatch a hook observation while Toggle() is mid-flight
+    private static bool WinHHoldArmed; // injected right-Win is down: shutdown must release it
     private static bool EnterCloseEnabled = true;  // tray-gated: close dictation on physical Enter while dictating
     private static bool SpaceCloseEnabled = true;  // tray-gated: close dictation on physical Space while dictating
     private static readonly ShutdownDecision ShutdownPolicy = new();
@@ -385,7 +381,17 @@ sealed partial class Program
 
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
-        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count) : 0;
+        // Prefer the English layout on the user's current physical keyboard:
+        // switching only the language (same klid) is stable mid-gesture, while
+        // a klid switch during a held key broke the shell's Win-combo handling.
+        nint currentHkl = 0;
+        nint foreground = GetForegroundWindow();
+        if (foreground != 0)
+        {
+            uint tid = GetWindowThreadProcessId(foreground, out _);
+            currentHkl = tid != 0 ? GetKeyboardLayout(tid) : 0;
+        }
+        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count, currentHkl != 0 ? (uint)currentHkl & 0xFFFF0000 : 0) : 0;
         if (englishLayout == 0)
         {
             MessageBoxW(0, "No English keyboard layout is installed. Voice Typing Toggle cannot start.",
@@ -482,15 +488,7 @@ sealed partial class Program
         {
             case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null:
                 TraceAction("hotkey");
-                InHotkeyDispatch = true;
-                try
-                {
-                    Core.Toggle();
-                }
-                finally
-                {
-                    InHotkeyDispatch = false;
-                }
+                Core.Toggle();
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
@@ -499,6 +497,9 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 ContinueShutdownIfNeeded();
                 Trace.Flush();
+                return 0;
+            case WmTimer when wParam == WinHHoldTimerId:
+                CompleteWinHInjection();
                 return 0;
             case WmQueryEndSession:
                 TraceAction("query-end-session");
@@ -518,6 +519,15 @@ sealed partial class Program
                 }
                 UpdateTrayTooltip();
                 Trace.Flush();
+                return 0;
+            case WmWinHDown when ShutdownPolicy.Kind is null:
+                // Async Win+H gesture, step 1: the loop is free (no nested
+                // message pump), the low-level hook stays responsive, and the
+                // injected right-Win chains to the shell immediately.
+                SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
+                TraceAction("winh-win-down");
+                WinHHoldArmed = true;
+                _ = SetTimer(AppWindow, WinHHoldTimerId, WinHHoldMs, 0);
                 return 0;
             case WmTrayIcon when ShutdownPolicy.Kind is null:
                 HandleTrayIconMessage(wParam, lParam);
@@ -812,6 +822,14 @@ sealed partial class Program
             _ = KillTimer(AppWindow, TimerId);
             FocusTimerRunning = false;
         }
+        if (WinHHoldArmed)
+        {
+            // The injected right-Win is still down. Finish the gesture
+            // (H + Win up + Escape) instead of a bare Win-up, which would open
+            // the Start menu.
+            CompleteWinHInjection();
+        }
+        _ = KillTimer(AppWindow, WinHHoldTimerId);
         if (VoiceUiHook != 0)
         {
             _ = UnhookWinEvent(VoiceUiHook);
@@ -888,41 +906,39 @@ sealed partial class Program
     static void SendWinH()
     {
         TraceAction("winh-begin");
-        // Empirically verified recipe: left-Win injection is ignored by the shell;
-        // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
-        SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
-        // The low-level hook delivers every key event through this thread's message
-        // loop, so holding the Win key with a blocked loop would stall system-wide
-        // keyboard processing and delay the injected events past the shell's combo
-        // window. Pump the loop during the hold so the injected events chain to the
-        // shell promptly, matching the spike's working conditions.
-        PumpMessageLoop(500);
+        // Async gesture: post step 1 instead of blocking the loop. The
+        // verified recipe (right-Win down, hold, H as scancode, right-Win up)
+        // is completed by the hold timer on the free message loop, so the
+        // low-level hook chains every injected event to the shell immediately
+        // and no nested message pump or reentrancy guard is needed. The shell
+        // sees the same timing as the original synchronous recipe.
+        _ = PostMessageW(AppWindow, WmWinHDown, 0, 0);
+    }
+
+    // Async Win+H gesture, step 2 (hold timer): complete the recipe, or abort
+    // if the session ended during the hold. Releasing the injected Win key on
+    // abort matters: a stuck injected Win would turn the next physical key
+    // into a Win-combo for the shell.
+    static void CompleteWinHInjection()
+    {
+        WinHHoldArmed = false;
+        _ = KillTimer(AppWindow, WinHHoldTimerId);
+        // Always finish the gesture with H before releasing Win: a bare Win-up
+        // opens the Start menu. When the session ended during the hold, the H
+        // opens the bar (or toggles a natively opened one) and the Escape
+        // closes it again; a stray Escape reaching the app matches the
+        // existing stop-before-launch semantics.
         SendKey(0, 0x23, up: false, useScanCode: true);
         SendKey(0, 0x23, up: true, useScanCode: true);
         SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
-        TraceAction("winh-sent");
-    }
-
-    // Bounded pump used only while SendWinH holds a key; hook callbacks, timers,
-    // and tray messages keep flowing so injected input is never gated on a
-    // blocked loop. Re-entrant dispatch is prevented by the InHotkeyDispatch guard.
-    static void PumpMessageLoop(int timeoutMs)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < timeoutMs)
+        if (!Core.IsDictating)
         {
-            if (!PeekMessageW(out MSG msg, 0, 0, 0, PmRemove))
-            {
-                Thread.Sleep(1);
-                continue;
-            }
-            if (msg.message == WmQuit)
-            {
-                PostQuitMessage(0); // re-post so the outer GetMessageW loop exits
-                return;
-            }
-            _ = TranslateMessage(in msg);
-            _ = DispatchMessageW(in msg);
+            SendEscape();
+            TraceAction("winh-aborted");
+        }
+        else
+        {
+            TraceAction("winh-sent");
         }
     }
 
@@ -1008,20 +1024,19 @@ sealed partial class Program
                     TraceAction("escape-observed");
                     OnExternalCloseObservation();
                     break;
-                case VK_RETURN when down && Core.IsDictating && EnterCloseEnabled && !InHotkeyDispatch:
+                case VK_RETURN when down && Core.IsDictating && EnterCloseEnabled:
                     // The bar does not close on Enter natively. Swallow the key
                     // (scoped exception to the no-swallow rule: a chained Enter
                     // would reach the app as a stray newline) and close the bar
                     // with the standard Escape-first stop from the message loop.
+                    // Swallow only when the deferred stop is actually queued.
                     TraceAction("enter-observed");
-                    swallow = true;
-                    _ = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
+                    swallow = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
                     break;
-                case VK_SPACE when down && Core.IsDictating && SpaceCloseEnabled && !InHotkeyDispatch:
+                case VK_SPACE when down && Core.IsDictating && SpaceCloseEnabled:
                     // Same as Enter: the bar does not close on Space natively.
                     TraceAction("space-observed");
-                    swallow = true;
-                    _ = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
+                    swallow = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
                     break;
             }
         }
@@ -1029,7 +1044,8 @@ sealed partial class Program
         catch (Exception)
 #pragma warning restore CA1031
         {
-            TraceAction("hook-error"); // never swallow input, even on failure
+            swallow = false; // failures never swallow input, even if the key was already matched
+            TraceAction("hook-error");
         }
         return swallow ? 1 : CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
     }
@@ -1042,10 +1058,8 @@ sealed partial class Program
     // timer. Never dispatch while a shutdown drains.
     static void OnWinHObservation()
     {
-        // Re-entrancy guard: SendWinH pumps the message loop, so a physical
-        // Win+H during the pump must not dispatch while Toggle() is mid-flight.
         // Never dispatch while a shutdown drains.
-        if (InHotkeyDispatch || ShutdownPolicy.Kind is not null)
+        if (ShutdownPolicy.Kind is not null)
         {
             return;
         }
@@ -1053,11 +1067,11 @@ sealed partial class Program
         DispatchObservation();
     }
 
-    // Physical Escape/Enter while dictating: the key itself closes the bar;
-    // only the saved state needs restoring. Same guards as the Win+H path.
+    // Physical Escape while dictating: the key itself closes the bar; only
+    // the saved state needs restoring.
     static void OnExternalCloseObservation()
     {
-        if (InHotkeyDispatch || ShutdownPolicy.Kind is not null)
+        if (ShutdownPolicy.Kind is not null)
         {
             return;
         }
