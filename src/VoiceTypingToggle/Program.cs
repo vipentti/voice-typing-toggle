@@ -40,7 +40,6 @@ sealed partial class Program
     const uint TpmRightButton = 0x0002;
     const uint TpmReturnCommand = 0x0100;
     const uint MenuExitId = 1;
-    const int ShutdownCorrectionLimit = 2;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -323,9 +322,7 @@ sealed partial class Program
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
     private static bool ShutdownRequested;
-    private static ShutdownReason RequestedShutdownReason;
-    private static bool ShutdownNeedsDrain;
-    private static int ShutdownCorrections;
+    private static readonly ShutdownDecision ShutdownPolicy = new();
 
     private enum ShutdownReason
     {
@@ -620,15 +617,20 @@ sealed partial class Program
             return;
         }
         ShutdownRequested = true;
-        RequestedShutdownReason = reason;
-        ShutdownNeedsDrain = Core.IsDictating || Core.StopConfirmPending;
+        ShutdownAction initialAction = ShutdownPolicy.Begin(
+            reason == ShutdownReason.UserExit ? ShutdownKind.UserExit : ShutdownKind.FatalTrayLoss,
+            Core.IsDictating,
+            Core.StopConfirmPending);
         TraceAction(reason == ShutdownReason.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
         if (Core.IsDictating)
         {
             Core.Toggle(); // normal stop keeps the watchdog armed for late popups
             UpdateTrayTooltip();
         }
-        ContinueShutdownIfNeeded();
+        if (initialAction == ShutdownAction.Complete)
+        {
+            CompleteShutdown();
+        }
     }
 
     static void ContinueShutdownIfNeeded()
@@ -637,31 +639,25 @@ sealed partial class Program
         {
             return;
         }
-        if (!ShutdownNeedsDrain)
+        ShutdownAction action = ShutdownPolicy.Advance(Core.IsDictating, Core.StopConfirmPending, IsVoiceUiVisible());
+        if (action == ShutdownAction.Wait)
+        {
+            return;
+        }
+        if (action == ShutdownAction.Complete)
         {
             CompleteShutdown();
             return;
         }
-        if (!Core.IsDictating && !Core.StopConfirmPending && !IsVoiceUiVisible())
-        {
-            CompleteShutdown();
-            return;
-        }
-        if (Core.StopConfirmPending)
-        {
-            return;
-        }
-        if (ShutdownCorrections++ < ShutdownCorrectionLimit)
+        if (action == ShutdownAction.Correct)
         {
             SendEscape();
             Core.RestoreIfDictating();
             return;
         }
-        if (RequestedShutdownReason == ShutdownReason.UserExit)
+        if (action == ShutdownAction.CancelUserExit)
         {
             ShutdownRequested = false;
-            ShutdownNeedsDrain = false;
-            ShutdownCorrections = 0;
             MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.", "Voice Typing Toggle", 0x10);
             return;
         }

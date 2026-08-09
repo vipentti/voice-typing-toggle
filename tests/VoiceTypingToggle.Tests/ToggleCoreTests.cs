@@ -140,6 +140,46 @@ public class TrayIconLifecycleTests
     }
 }
 
+public class ShutdownDecisionTests
+{
+    [Fact]
+    public void PendingStopKeepsShutdownWaiting()
+    {
+        var decision = new ShutdownDecision();
+        Assert.Equal(ShutdownAction.Wait, decision.Begin(ShutdownKind.UserExit, false, true));
+        Assert.Equal(ShutdownAction.Wait, decision.Advance(false, true, false));
+    }
+
+    [Fact]
+    public void StableStopPermitsTeardown()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false);
+        Assert.Equal(ShutdownAction.Complete, decision.Advance(false, false, false));
+    }
+
+    [Fact]
+    public void UnconfirmedUserExitCancelsAfterBoundedCorrections()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false);
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.CancelUserExit, decision.Advance(false, false, true));
+        Assert.False(decision.Requested);
+    }
+
+    [Fact]
+    public void FatalTrayLossForcesShutdownAfterBoundedCorrections()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.FatalTrayLoss, true, false);
+        decision.Advance(false, false, true);
+        decision.Advance(false, false, true);
+        Assert.Equal(ShutdownAction.ForceFatalShutdown, decision.Advance(false, false, true));
+    }
+}
+
 public class ToggleCoreTests
 {
     const nint EnUs = 0x040B0409;
