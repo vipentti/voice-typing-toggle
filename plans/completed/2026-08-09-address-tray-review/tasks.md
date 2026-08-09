@@ -6,3 +6,8 @@
 - [x] T4 Delete `TrayIconLifecycle.cs` and inline tray install/recreate in `Program`
 - [x] T5 Update tests: escalation regression, cancellation gating, `CorrectPendingStop`, remove `TrayIconLifecycle` tests
 - [x] T6 Run `dotnet build` and `dotnet test` on the solution and confirm all pass
+
+## Completion
+
+- Completed at: 2026-08-09T12:03:31.214Z
+- Mode: normal
