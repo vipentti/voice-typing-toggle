@@ -17,7 +17,7 @@ sealed partial class Program
     const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
-    const uint WmEnterClose = WmApp + 2;
+    const uint WmCloseKeyStop = WmApp + 2;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
     const uint WsExToolWindow = 0x00000080;
@@ -46,6 +46,8 @@ sealed partial class Program
     const uint TpmReturnCommand = 0x0100;
     const uint MenuExitId = 1;
     const uint MenuInterceptWinHId = 2;
+    const uint MenuEnterCloseId = 3;
+    const uint MenuSpaceCloseId = 4;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -55,6 +57,7 @@ sealed partial class Program
     const ushort VK_H = 0x48;
     const ushort VK_ESCAPE = 0x1B;
     const ushort VK_RETURN = 0x0D;
+    const ushort VK_SPACE = 0x20;
     const int WhKeyboardLl = 13;
     const uint LlkhfInjected = 0x00000010;
     const uint WmKeyDown = 0x0100;
@@ -371,6 +374,8 @@ sealed partial class Program
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
     private static bool InHotkeyDispatch; // re-entrancy guard: never dispatch a hook observation while Toggle() is mid-flight
+    private static bool EnterCloseEnabled = true;  // tray-gated: close dictation on physical Enter while dictating
+    private static bool SpaceCloseEnabled = true;  // tray-gated: close dictation on physical Space while dictating
     private static readonly ShutdownDecision ShutdownPolicy = new();
 
     static int Main()
@@ -501,11 +506,12 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 1; // allow shutdown
-            case WmEnterClose when ShutdownPolicy.Kind is null:
-                // Deferred Enter-close: the swallowed physical Enter cannot close
-                // the bar itself, so the standard Escape-first stop runs here on
-                // the message loop (never from the hook callback).
-                TraceAction("enter-close");
+            case WmCloseKeyStop when ShutdownPolicy.Kind is null:
+                // Deferred close-on-key stop: the swallowed physical Enter or
+                // Space cannot close the bar itself, so the standard
+                // Escape-first stop runs here on the message loop (never from
+                // the hook callback).
+                TraceAction("close-key-stop");
                 if (Core.IsDictating)
                 {
                     Core.StopDictation();
@@ -600,8 +606,11 @@ sealed partial class Program
             _ = AppendMenuW(menu, informationalFlags, 0, $"Status: {CurrentStatus}");
             _ = AppendMenuW(menu, informationalFlags, 0, "Hotkey: Ctrl+Alt+H");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
-            // Session-only interception toggle; the checkmark reflects the live hook state.
+            // Session-only interception and close-key toggles; the checkmarks
+            // reflect the live state.
             _ = AppendMenuW(menu, MfString | (KeyboardHook != 0 ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
+            _ = AppendMenuW(menu, MfString | (EnterCloseEnabled ? MfChecked : MfUnchecked), MenuEnterCloseId, "Close dictation on Enter");
+            _ = AppendMenuW(menu, MfString | (SpaceCloseEnabled ? MfChecked : MfUnchecked), MenuSpaceCloseId, "Close dictation on Space");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
             _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
 
@@ -616,6 +625,16 @@ sealed partial class Program
             else if (command == MenuInterceptWinHId)
             {
                 ToggleInterception();
+            }
+            else if (command == MenuEnterCloseId)
+            {
+                EnterCloseEnabled = !EnterCloseEnabled;
+                TraceAction(EnterCloseEnabled ? "enter-close-on" : "enter-close-off");
+            }
+            else if (command == MenuSpaceCloseId)
+            {
+                SpaceCloseEnabled = !SpaceCloseEnabled;
+                TraceAction(SpaceCloseEnabled ? "space-close-on" : "space-close-off");
             }
         }
         finally
@@ -989,14 +1008,20 @@ sealed partial class Program
                     TraceAction("escape-observed");
                     OnExternalCloseObservation();
                     break;
-                case VK_RETURN when down && Core.IsDictating && !InHotkeyDispatch:
+                case VK_RETURN when down && Core.IsDictating && EnterCloseEnabled && !InHotkeyDispatch:
                     // The bar does not close on Enter natively. Swallow the key
                     // (scoped exception to the no-swallow rule: a chained Enter
                     // would reach the app as a stray newline) and close the bar
                     // with the standard Escape-first stop from the message loop.
                     TraceAction("enter-observed");
                     swallow = true;
-                    _ = PostMessageW(AppWindow, WmEnterClose, 0, 0);
+                    _ = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
+                    break;
+                case VK_SPACE when down && Core.IsDictating && SpaceCloseEnabled && !InHotkeyDispatch:
+                    // Same as Enter: the bar does not close on Space natively.
+                    TraceAction("space-observed");
+                    swallow = true;
+                    _ = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
                     break;
             }
         }
