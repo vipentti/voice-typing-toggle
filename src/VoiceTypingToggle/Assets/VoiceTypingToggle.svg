@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Voice Typing Toggle icon">
+  <title>Voice Typing Toggle</title>
+  <g fill="none" fill-rule="evenodd">
+    <rect x="22" y="22" width="212" height="212" rx="46" fill="#2563EB" stroke="#F8FAFC" stroke-width="8"/>
+    <rect x="105" y="58" width="46" height="86" rx="23" fill="#F8FAFC"/>
+    <path d="M82 116v10c0 30 19 49 46 49s46-19 46-49v-10" stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"/>
+    <path d="M128 175v18" stroke="#F8FAFC" stroke-width="14" stroke-linecap="round"/>
+    <path d="M116 181H91v-10l-24 18 24 18v-10h25z" fill="#F8FAFC"/>
+    <path d="M140 181h25v-10l24 18-24 18v-10h-25z" fill="#F8FAFC"/>
+  </g>
+</svg>

@@ -88,6 +88,65 @@ public class SelectEnglishLayoutTests
     }
 }
 
+public class ShutdownDecisionTests
+{
+    [Fact]
+    public void PendingStopKeepsShutdownWaiting()
+    {
+        var decision = new ShutdownDecision();
+        Assert.Equal(ShutdownAction.Wait, decision.Begin(ShutdownKind.UserExit, false, true));
+        Assert.Equal(ShutdownAction.Wait, decision.Advance(false, true, false));
+    }
+
+    [Fact]
+    public void StableStopPermitsTeardown()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false);
+        Assert.Equal(ShutdownAction.Complete, decision.Advance(false, false, false));
+    }
+
+    [Fact]
+    public void UnconfirmedUserExitCancelsAfterBoundedCorrections()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false);
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.CancelUserExit, decision.Advance(false, false, true));
+        decision.Cancel(); // the coordinator cancels only with the tray icon installed again
+        Assert.Null(decision.Kind);
+    }
+
+    [Fact]
+    public void ExplorerRestartDuringUserExitUpgradesToFatalShutdown()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false); // user Exit while dictating
+        decision.Advance(false, false, true);               // bar still visible after watchdog expiry
+
+        // Explorer restarts mid-drain and the icon cannot be recreated: the
+        // coordinator escalates instead of letting the Exit cancel later.
+        Assert.Equal(ShutdownAction.Wait, decision.Begin(ShutdownKind.FatalTrayLoss, false, false));
+        Assert.Equal(ShutdownKind.FatalTrayLoss, decision.Kind);
+
+        // The drain continues with a fresh budget and now fails closed.
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.ForceFatalShutdown, decision.Advance(false, false, true));
+    }
+
+    [Fact]
+    public void FatalTrayLossForcesShutdownAfterBoundedCorrections()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.FatalTrayLoss, true, false);
+        decision.Advance(false, false, true);
+        decision.Advance(false, false, true);
+        Assert.Equal(ShutdownAction.ForceFatalShutdown, decision.Advance(false, false, true));
+    }
+}
+
 public class ToggleCoreTests
 {
     const nint EnUs = 0x040B0409;
@@ -203,6 +262,46 @@ public class ToggleCoreTests
             core.CheckDictationFocus();
         }
         Assert.False(core.StopConfirmPending);
+    }
+
+    [Fact]
+    public void CorrectPendingStopRunsCanonicalSavedStopCorrection()
+    {
+        var (core, requests) = NewCore();
+        int escapes = 0;
+        var focusCalls = new List<nint>();
+        var sleeps = new List<int>();
+        core.SendEscape = () => escapes++;
+        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.Sleep = sleeps.Add;
+        var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, stop retry check, corrective retry check
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start
+        core.Toggle(); // stop: snapshot armed, 2 escapes
+        Assert.Equal(2, escapes);
+
+        core.CorrectPendingStop(); // shutdown drain: bar still visible
+
+        Assert.Equal(3, escapes); // corrective Escape only (retry check saw the candidate)
+        Assert.Equal([Target, Target], focusCalls); // focus restored via the snapshot
+        Assert.Equal([30, 100], sleeps); // fast stop settle, then the corrective safe settle
+        Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // layout restored via the snapshot
+    }
+
+    [Fact]
+    public void CorrectPendingStopIgnoredWhileDictating()
+    {
+        var (core, _) = NewCore();
+        int escapes = 0;
+        core.SendEscape = () => escapes++;
+        var fg = new Queue<nint>([Target]);
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start only; no stop snapshot, dictating must never be corrected
+        core.CorrectPendingStop();
+
+        Assert.Equal(0, escapes);
     }
 
     [Fact]

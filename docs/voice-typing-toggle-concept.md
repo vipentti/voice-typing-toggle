@@ -98,6 +98,20 @@ A GUI is not required for the MVP.
 
 The process can run in the background with a hidden window solely to receive Windows messages and hotkey events.
 
+## Notification area behavior
+
+The utility has one static notification-area icon and no visible application
+window, taskbar button, or Alt+Tab entry. Its tooltip identifies the utility and
+reports Idle or Dictating. The icon can appear in the notification-area overflow
+depending on the user's Windows taskbar preferences.
+
+Right-click and keyboard context-menu activation show informational application,
+status, and hotkey rows plus Exit. Left-click and double-click are inert.
+Opening the menu during dictation follows the existing focus-loss recovery path,
+so the saved layout is restored and the menu reports Idle. Exit waits for any
+stop confirmation and late-popup correction before teardown; an unconfirmed
+user Exit leaves the utility running with its icon and reports an error.
+
 ---
 
 ## User Interaction
@@ -826,4 +840,3 @@ SendInput
 ```
 
 The design should stay intentionally narrow: it is not a keyboard automation framework. It is a single-purpose helper that temporarily changes the foreground application's input language for Windows Voice Typing and then restores the user's original typing environment.
-

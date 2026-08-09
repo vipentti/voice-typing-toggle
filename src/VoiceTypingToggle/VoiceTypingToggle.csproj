@@ -11,6 +11,7 @@
     <PublishAot>true</PublishAot>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishSingleFile>true</PublishSingleFile>
+    <ApplicationIcon>Assets\VoiceTypingToggle.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

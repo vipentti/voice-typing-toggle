@@ -158,6 +158,19 @@ internal sealed class ToggleCore
         stopConfirmTicksLeft = StopConfirmTimeoutTicks; // fresh expiry window for any further reopen
     }
 
+    // Shutdown drain: the coordinator re-runs the canonical saved-stop
+    // correction while the Voice Typing bar is still visible after a stop.
+    // Uses the stopConfirm* snapshot; ShutdownDecision bounds the attempts.
+    public void CorrectPendingStop()
+    {
+        if (IsDictating || stopConfirmWindow == 0)
+        {
+            return;
+        }
+        Trace("drain-corrective-begin");
+        RunStopSequence(corrective: true); // safe settle: a racy correction would just reopen the bar again
+    }
+
     // Self-healing: the Voice Typing bar auto-closes on any focus change, so once
     // focus leaves the dictation target the state is stale — restore and go Idle.
     // Also confirms the bar launch (timer-based, non-blocking) and expires the
