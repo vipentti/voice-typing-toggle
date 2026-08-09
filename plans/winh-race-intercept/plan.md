@@ -13,11 +13,14 @@ Win+H behavior is preserved).
 ## Scope
 
 - Install a low-level keyboard hook (`WH_KEYBOARD_LL`) while interception is
-  enabled. The callback matches physical Win+H only and never intentionally
+  enabled. The callback matches physical Win+H and never intentionally
   swallows input: it chains through `CallNextHookEx` and returns its result on
   every path. For `nCode < 0` it must chain immediately and return that result
   without any other processing. Plain Win, Win+E, Win+D and all other shortcuts
-  pass through untouched.
+  pass through untouched. While the core is dictating, the callback also
+  matches physical Escape (vk `0x1B`) and Enter (vk `0x0D`) keydowns so an
+  external close with those keys restores the saved state instead of leaving
+  it stale; both are control keys matched by vk only, never typed content.
 - Win modifier detection: the callback tracks `VK_LWIN`/`VK_RWIN` down/up state
   from the hook events themselves (non-injected keydown sets the flag, keyup
   clears it). `GetKeyState` is not used: it reflects the hook thread's own
@@ -33,7 +36,9 @@ Win+H behavior is preserved).
   chord is re-armed. Re-arm happens when the H keyup or either Win keyup is
   observed. Key-up and auto-repeat callbacks therefore never produce additional
   observations, and a fast Idle -> Dictating -> Idle double-toggle from one
-  chord is impossible.
+  chord is impossible. While dictating, the first non-injected Escape or Enter
+  keydown dispatches the native stop; auto-repeat and further presses are
+  no-ops because the core is already Idle after the first dispatch.
 - Start path (Idle): on the single observation per chord, the callback
   performs the layout request and confirmation synchronously BEFORE chaining
   the H event, through a dedicated hook-safe bounded request path. Chaining
@@ -59,7 +64,11 @@ Win+H behavior is preserved).
   is performed by Windows itself. `ToggleCore` gets a distinct native-stop
   entry that arms the existing stop-confirmation watchdog, marks Idle, and
   defers restoration (saved window and layout) to the message loop after a
-  short settle. The Ctrl+Alt+H stop path (Escape-first) is unchanged.
+  short settle. The Ctrl+Alt+H stop path (Escape-first) is unchanged. An
+  external close via physical Escape or Enter uses the same native-stop entry:
+  the user's own key closes the bar, the callback only restores saved layout
+  and focus afterwards, and the positive-only watchdog covers a close that
+  fails.
 - Native-close confirmation: closure cannot be proven by observation, so the
   confirmation is positive-only, consistent with the repository's treatment of
   the TextInputHost popup (absence is explicitly inconclusive: the popup is
@@ -193,6 +202,9 @@ replay) becomes a separate planlet and this one archives its findings.
   injected Win+H never triggers the hook path (no double-toggle).
 - Focus change while dictating (Win+H- or Ctrl+Alt+H-started) triggers the
   existing self-heal.
+- Closing dictation with physical Escape or Enter (instead of Win+H or
+  Ctrl+Alt+H) restores the saved layout and focus and returns the core to
+  Idle; the next start then begins from the correct starting layout.
 - Race success: for at least 9 of 10 physical presses in each tested starting
   layout (fi-FI and one non-Finnish), Voice Typing itself is observably using
   English: the bar's language indicator shows English, or a controlled English
@@ -217,8 +229,10 @@ replay) becomes a separate planlet and this one archives its findings.
   non-Finnish starting layouts, failed English-layout activation (observable
   result: native bar opens in current layout, core stays Idle), repeated
   toggles, hold-and-release chord (single toggle), focus changes, shutdown
-  restoration, elevated-app limitation (a non-elevated hook cannot see input
-  destined for elevated windows), and interception off/on at runtime.
+  restoration, external close via physical Escape and Enter while dictating
+  (layout and focus restored, core Idle, next start correct), elevated-app
+  limitation (a non-elevated hook cannot see input destined for elevated
+  windows), and interception off/on at runtime.
 - Both stop paths are verified manually: physical Win+H stop closes via the
   native handler with no injected Escape before the chained event, and
   Ctrl+Alt+H stop keeps the existing Escape-first behavior. A physical stop

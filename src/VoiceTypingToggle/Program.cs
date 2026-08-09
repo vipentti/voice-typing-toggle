@@ -49,6 +49,8 @@ sealed partial class Program
     const ushort VK_RWIN = 0x5C;
     const ushort VK_LWIN = 0x5B;
     const ushort VK_H = 0x48;
+    const ushort VK_ESCAPE = 0x1B;
+    const ushort VK_RETURN = 0x0D;
     const int WhKeyboardLl = 13;
     const uint LlkhfInjected = 0x00000010;
     const uint WmKeyDown = 0x0100;
@@ -941,6 +943,18 @@ sealed partial class Program
                 case VK_H when !down:
                     WinHDispatched = false;
                     break;
+                case VK_ESCAPE when down && Core.IsDictating:
+                    // External close: the user's own Escape closes the bar; the
+                    // native-stop dispatch only restores the saved state. The
+                    // injected guard above keeps our own stop Escape from
+                    // re-triggering; auto-repeat is a no-op once the core is Idle.
+                    TraceAction("escape-observed");
+                    OnExternalCloseObservation();
+                    break;
+                case VK_RETURN when down && Core.IsDictating:
+                    TraceAction("enter-observed");
+                    OnExternalCloseObservation();
+                    break;
             }
         }
 #pragma warning disable CA1031 // an exception escaping a native callback terminates a Native AOT process
@@ -968,6 +982,29 @@ sealed partial class Program
             return;
         }
         TraceAction("winh-observation");
+        DispatchObservation();
+    }
+
+    // Physical Escape/Enter while dictating: the key itself closes the bar;
+    // only the saved state needs restoring. Same guards as the Win+H path.
+    static void OnExternalCloseObservation()
+    {
+        if (InHotkeyDispatch || ShutdownPolicy.Kind is not null)
+        {
+            return;
+        }
+        TraceAction("external-close-observation");
+        DispatchObservation();
+    }
+
+    // Shared observation dispatch (called from the hook callback on the
+    // message-loop thread, BEFORE the event is chained onward). Idle: bounded
+    // synchronous race-start so English is confirmed before the native Win+H
+    // proceeds. Dictating: native stop only, which injects nothing; the
+    // physical press itself closes the bar, and restoration runs later on the
+    // focus-watch timer.
+    static void DispatchObservation()
+    {
         if (Core.IsDictating)
         {
             Core.StopDictationNative();
