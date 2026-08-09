@@ -75,6 +75,15 @@ internal sealed class ToggleCore
         {
             return;
         }
+        // Resolve pending native-stop ownership BEFORE touching this target: a
+        // failed old restore leaves the new target untouched (no leaked English
+        // switch) and the snapshot stays armed for the timer to retry.
+        nint baseline = ResolvePendingNativeStop(hwnd);
+        if (baseline == 0)
+        {
+            Trace("restart-deferred");
+            return;
+        }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
@@ -82,16 +91,9 @@ internal sealed class ToggleCore
         if (!IsEnglishLayout(current) &&
             (!RequestLayout(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
-            return; // stay Idle; a pending native-stop restore remains armed
+            return; // stay Idle
         }
-        SavedLayout = ConsumePendingNativeStop(hwnd, current);
-        if (nativeStopRestorePending)
-        {
-            // The old session's restore could not complete; it stays armed for
-            // the timer to retry. Do not start on top of an unrestored session.
-            Trace("restart-deferred");
-            return;
-        }
+        SavedLayout = baseline;
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
@@ -125,20 +127,24 @@ internal sealed class ToggleCore
         {
             return;
         }
+        // Same ordering as StartDictation: resolve the pending snapshot before
+        // any mutation of this target, so a failed old restore leaves it on
+        // its original layout and the physical press stays fail-open.
+        nint baseline = ResolvePendingNativeStop(hwnd);
+        if (baseline == 0)
+        {
+            Trace("restart-deferred");
+            return;
+        }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
         if (!IsEnglishLayout(current) &&
             (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
             Trace("race-layout-failed");
-            return; // stay Idle; no injected Win+H; native press proceeds; pending restore remains armed
+            return; // stay Idle; no injected Win+H; native press proceeds
         }
-        SavedLayout = ConsumePendingNativeStop(hwnd, current);
-        if (nativeStopRestorePending)
-        {
-            Trace("restart-deferred"); // the old restore stays armed for the timer
-            return;
-        }
+        SavedLayout = baseline;
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false;
@@ -166,32 +172,31 @@ internal sealed class ToggleCore
         Trace("native-stop-armed");
     }
 
-    // Consumes a pending native-stop snapshot once the new session is
-    // established (never on a failed start: the timer must still restore it).
-    // Same target: the snapshot's original layout becomes the new session's
-    // restore baseline, because the thread is still on English. Different
-    // target: the old target's layout is restored first, without stealing
-    // focus; if that restore fails, the snapshot stays armed for the timer to
-    // retry and the caller must not accept the new session (checked via the
-    // still-pending flag).
-    nint ConsumePendingNativeStop(nint hwnd, nint current)
+    // Resolves a pending native-stop snapshot BEFORE the new target is
+    // mutated. Returns the restore baseline for the new session, or 0 when the
+    // pending old restore could not complete (the snapshot stays armed for the
+    // timer to retry and the caller must not start). Same target: the
+    // snapshot's original layout is carried forward (the thread is still on
+    // English). Different target: the old target's layout is restored first,
+    // without stealing focus, and the new target's own layout is the baseline.
+    nint ResolvePendingNativeStop(nint hwnd)
     {
         if (!nativeStopRestorePending)
         {
-            return current;
+            return GetLayout(GetThreadId(hwnd));
         }
         if (stopConfirmWindow == hwnd)
         {
             nativeStopRestorePending = false;
-            return stopConfirmLayout; // carry the original layout forward
+            return stopConfirmLayout;
         }
         if (stopConfirmWindow != 0 && !RestoreLayout(stopConfirmWindow, stopConfirmLayout))
         {
             Trace("pending-restore-failed"); // snapshot stays armed; the timer retries
-            return current;
+            return 0;
         }
         nativeStopRestorePending = false;
-        return current;
+        return GetLayout(GetThreadId(hwnd));
     }
 
     void CompleteNativeStopRestore()

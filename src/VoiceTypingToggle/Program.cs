@@ -940,10 +940,10 @@ sealed partial class Program
     // releasing Win is mandatory: a bare Win-up opens the Start menu. On
     // abort the H opens the bar (or toggles a natively opened one) and the
     // Escape closes it again; a stray Escape reaching the app matches the
-    // existing stop-before-launch semantics. Every step is checked: on any
-    // injection failure the remaining releases are attempted best-effort (a
-    // logically held Win is worse than a stray Start), and the session is
-    // rolled back.
+    // existing stop-before-launch semantics. Failure handling is structured
+    // around the activation point: once H-down succeeded, Windows may already
+    // act on Win+H, so rollback must close the bar with Escape; before that
+    // point, rollback is layout-only.
     static void CompleteWinHInjection(bool forceClose = false)
     {
         WinHHoldArmed = false;
@@ -951,8 +951,24 @@ sealed partial class Program
         bool hDown = SendKey(0, 0x23, up: false, useScanCode: true);
         bool hUp = hDown && SendKey(0, 0x23, up: true, useScanCode: true);
         bool winUp = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
-        if (!hDown || !hUp || !winUp)
+        if (!hDown)
         {
+            // Voice Typing was never triggered: layout-only rollback. Win may
+            // be logically held; release best-effort (a held Win is worse than
+            // a stray Start here).
+            TraceAction("winh-inject-failed");
+            if (!winUp)
+            {
+                _ = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+            }
+            Core.RestoreIfDictating();
+            return;
+        }
+        if (!hUp || !winUp)
+        {
+            // The gesture reached the activation point: the bar may be open
+            // and listening. Release best-effort, close the bar with Escape,
+            // then roll back core state.
             TraceAction("winh-inject-failed");
             if (!hUp)
             {
@@ -962,6 +978,7 @@ sealed partial class Program
             {
                 _ = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true); // best-effort Win release
             }
+            SendEscape();
             Core.RestoreIfDictating();
             return;
         }

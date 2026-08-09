@@ -739,12 +739,12 @@ public class ToggleCoreTests
         core.Toggle(); // session A on Target: FiFi -> EnUs
         core.StopDictationNative();
         core.GetForeground = () => other;
-        core.Toggle(); // session B on other: FiFi -> EnUs; Target's original layout restored first
+        core.Toggle(); // session B on other: Target's original layout restored first, then FiFi -> EnUs
 
         Assert.True(core.IsDictating);
         Assert.Equal(FiFi, layouts[7]); // old target's original layout restored, no focus steal
         Assert.Equal(FiFi, core.SavedLayout); // session B baseline = other's original
-        Assert.Equal([(Target, EnUs), (other, EnUs), (Target, FiFi)], requests);
+        Assert.Equal([(Target, EnUs), (Target, FiFi), (other, EnUs)], requests); // restore first, then switch
     }
 
     [Fact]
@@ -773,13 +773,47 @@ public class ToggleCoreTests
         core.RequestLayout = (h, hkl) => hkl == FiFi ? false : requestLayout(h, hkl); // the old target's restore fails
         core.Toggle(); // the new session must not be accepted on top of an unrestored old one
         Assert.False(core.IsDictating);
+        Assert.Equal(FiFi, layouts[8]); // the new target was never switched: no leaked English
+        Assert.DoesNotContain(requests, r => r.hwnd == other);
 
         core.RequestLayout = requestLayout; // the timer's retry can now succeed
         core.CheckDictationFocus(); // tick 1: settle
         core.CheckDictationFocus(); // tick 2: pending restore still armed -> runs
 
         Assert.Equal(FiFi, layouts[7]); // the old target's original layout eventually returns
+        Assert.Equal(FiFi, layouts[8]); // the deferred start never mutated the new target
         Assert.False(core.IsDictating);
+    }
+
+    [Fact]
+    public void FailedOldTargetRestoreDefersRaceStartUntouched()
+    {
+        const nint other = 0xABCD;
+        var requests = new List<(nint hwnd, nint hkl)>();
+        var layouts = new Dictionary<uint, nint> { [7] = FiFi, [8] = FiFi };
+        var core = new ToggleCore(EnUs)
+        {
+            GetForeground = () => Target,
+            GetThreadId = h => h == Target ? 7u : 8u,
+            GetLayout = tid => layouts[tid],
+            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            SendWinH = () => { },
+            SendEscape = () => { },
+            RestoreFocus = _ => true,
+            Sleep = _ => { },
+        };
+
+        core.Toggle(); // session A on Target
+        core.StopDictationNative();
+        core.GetForeground = () => other;
+        var requestLayout = core.RequestLayout;
+        core.RequestLayout = (h, hkl) => hkl == FiFi ? false : requestLayout(h, hkl); // the old target's restore fails
+        core.StartDictationRace(other); // race path: must stay Idle with the target untouched
+
+        Assert.False(core.IsDictating);
+        Assert.Equal(FiFi, layouts[8]); // the physical press stays fail-open on the original layout
+        Assert.DoesNotContain(requests, r => r.hwnd == other);
     }
 
     [Fact]
@@ -813,7 +847,8 @@ public class ToggleCoreTests
         core.CheckDictationFocus(); // tick 2: the pending restore still runs
 
         Assert.Equal(FiFi, layouts[7]);
-        Assert.Equal([(Target, EnUs), (Target, FiFi)], requests);
+        Assert.DoesNotContain(requests, r => r.hwnd == other); // B's failed switch was never recorded
+        Assert.Equal([(Target, EnUs), (Target, FiFi)], requests); // old target restored, B's switch failed
         Assert.False(core.IsDictating);
     }
 
@@ -848,7 +883,7 @@ public class ToggleCoreTests
         Assert.Equal(other, core.SavedWindow);
         Assert.Empty(focusCalls); // stale restore must not pull focus back to the old target
         Assert.Equal(FiFi, core.SavedLayout); // session B baseline: other's original layout
-        Assert.Equal([(Target, EnUs), (other, EnUs), (Target, FiFi)], requests); // old target restored, session B switched
+        Assert.Equal([(Target, EnUs), (Target, FiFi), (other, EnUs)], requests); // old target restored first, then session B switched
     }
 
     [Fact]
