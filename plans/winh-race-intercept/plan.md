@@ -43,8 +43,10 @@ Win+H behavior is preserved).
   100 ms timeout for the request, then `ToggleCore.WaitForLayout` with its
   existing ~100 ms cap; worst-case callback duration is therefore bounded at
   roughly 200 ms (typical <5 ms), after which the H event is chained and the
-  native handler opens the bar with English already confirmed. The existing
-  1000 ms `RequestLayout` behavior is unchanged for the Ctrl+Alt+H path. Do
+  native handler opens the bar with English already confirmed. `ToggleCore`
+  receives this bounded request through a distinct injected seam used only by
+  race-start; the existing `RequestLayout` seam stays bound to the 1000 ms
+  `SendMessageTimeout` and remains the only request path for Ctrl+Alt+H. Do
   not re-inject Win+H. If the layout request or confirmation fails, the
   race-start leaves `ToggleCore` Idle with no saved session and performs no
   injected Win+H; because the hook does not swallow, the physical Win+H still
@@ -58,16 +60,19 @@ Win+H behavior is preserved).
   entry that arms the existing stop-confirmation watchdog, marks Idle, and
   defers restoration (saved window and layout) to the message loop after a
   short settle. The Ctrl+Alt+H stop path (Escape-first) is unchanged.
-- Native-close confirmation: the existing watchdog cannot by itself detect a
-  native close that simply fails and leaves the bar visible, because
-  `OnVoiceUiShown` corrects only after a new SHOW event and `CheckDictationFocus`
-  expires `StopConfirmPending` without inspecting bar visibility. While a
-  native-stop confirmation is pending, the message-loop timer therefore checks
-  `IsVoiceUiVisible` directly: if the bar is still visible after the settle,
-  it runs a bounded corrective stop (Escape, bounded, same corrective
-  machinery as the shutdown path); if the bar is gone, it completes the stop.
-  `OnVoiceUiShown` is retained for reopen detection. Escape is thus reserved
-  for corrective passes exactly when the native close fails.
+- Native-close confirmation: closure cannot be proven by observation, so the
+  confirmation is positive-only, consistent with the repository's treatment of
+  the TextInputHost popup (absence is explicitly inconclusive: the popup is
+  transient and does not appear for every launch or remain for the whole
+  session). While a native-stop confirmation is pending, the message-loop
+  timer runs a bounded corrective stop (Escape, same corrective machinery as
+  the shutdown path) only on positive evidence that Voice Typing remains or
+  reappears: `IsVoiceUiVisible() == true`, or an `OnVoiceUiShown` SHOW event.
+  Absence is never treated as closure: no correction runs, and the pending
+  confirmation expires through the existing watchdog expiry semantics exactly
+  as the Ctrl+Alt+H stop does today. A native close that fails with no
+  observable popup signal is therefore an accepted residual limitation,
+  identical to the existing stop path's exposure.
 - Ctrl+Alt+H keeps its current behavior exactly: injected `SendWinH` start,
   Escape-first stop, always active regardless of the interception toggle.
 - Focus-loss recovery (`CheckDictationFocus`) is unchanged and applies to
@@ -147,12 +152,15 @@ English is confirmed before the H event is chained; on a Dictating
 observation the callback chains first and defers all stop work to the
 message loop, so the Dictating callback path never blocks.
 
-`ToggleCore` gains a race-start entry (layout switch and wait, no `SendWinH`)
-and a native-stop entry (watchdog armed, Idle marked, restoration deferred,
-Escape reserved for corrective passes, native-close confirmation on the
-message-loop timer via `IsVoiceUiVisible` while the stop confirmation is
-pending). The existing injected-start and Escape-first stop paths are
-unchanged. Unit tests cover all four entries and
+`ToggleCore` gains a race-start entry (bounded hook-safe layout request and
+wait through a distinct injected seam, no `SendWinH`) and a native-stop entry
+(watchdog armed, Idle marked, restoration deferred, Escape reserved for
+corrective passes, positive-only native-close confirmation on the
+message-loop timer: corrective Escape only when the popup is observed visible
+or a SHOW event arrives, absence inconclusive and left to the existing
+watchdog expiry). The existing injected-start and Escape-first stop paths,
+including their 1000 ms `RequestLayout` seam, are unchanged. Unit tests cover
+all four entries and
 unchanged Idle/Dictating transitions, including the exact layout-failure
 semantics: failed English confirmation leaves the core Idle, saves no session,
 and injects nothing, while the physical Win+H still proceeds natively because
@@ -173,9 +181,12 @@ replay) becomes a separate planlet and this one archives its findings.
   session and no injected Win+H; the native bar still opens in the current
   layout (hook chained the press through).
 - Interception on, native close failure: a physical Win+H stop whose native
-  close fails (bar stays visible) triggers the bounded corrective Escape pass
-  from the message-loop timer and ends with the bar closed and the saved
-  layout and window restored.
+  close fails with positively observed evidence (popup visible or a SHOW
+  event) triggers the bounded corrective Escape pass from the message-loop
+  timer and ends with the bar closed and the saved layout and window restored.
+  A failure with no observable popup signal is an accepted residual limitation
+  identical to the existing Ctrl+Alt+H stop exposure: the pending confirmation
+  expires without correction.
 - Interception off (tray checkbox): native Win+H behavior is byte-identical to
   running without the app.
 - Ctrl+Alt+H toggling works identically with interception on and off, and an
@@ -211,11 +222,12 @@ replay) becomes a separate planlet and this one archives its findings.
 - Both stop paths are verified manually: physical Win+H stop closes via the
   native handler with no injected Escape before the chained event, and
   Ctrl+Alt+H stop keeps the existing Escape-first behavior. A physical stop
-  must never reopen the bar. Persistent native-close failure is verified
-  explicitly: with the bar forced to survive the native close (for example
-  the bar is reopened or fails to dismiss), the pending native stop runs a
-  bounded corrective Escape pass and ends with the bar closed, layout and
-  window restored, within the watchdog bounds.
+  must never reopen the bar. Native-close failure is verified on positive
+  evidence only: with the bar present and observable (popup visible or a SHOW
+  event after the stop), the pending native stop runs a bounded corrective
+  Escape pass and ends with the bar closed and layout and window restored
+  within the watchdog bounds; a silently surviving bar with no observable
+  popup signal is documented as the accepted residual limitation.
 - The race success measurement is durable verification evidence (external,
   non-reproducible in CI, and it decides whether phase 2 is needed): record the
   per-press outcome in a committed file under `tmp/` and reference it from the
