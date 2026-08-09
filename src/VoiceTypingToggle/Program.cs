@@ -10,11 +10,22 @@ sealed partial class Program
     const uint WmHotkey = 0x0312;
     const uint WmTimer = 0x0113;
     const uint WmQueryEndSession = 0x0011;
+    const uint WmApp = 0x8000;
+    const uint WmTrayIcon = WmApp + 1;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
-    const nint HwndMessage = -3; // HWND_MESSAGE: message-only window
+    const uint WsExToolWindow = 0x00000080;
+    const uint WsExNoActivate = 0x08000000;
     const int HotkeyId = 1;
     const int TimerId = 2;
+    const uint TrayIconId = 1;
+    const uint NimAdd = 0x00000000;
+    const uint NimDelete = 0x00000002;
+    const uint NimSetVersion = 0x00000004;
+    const uint NifMessage = 0x00000001;
+    const uint NifIcon = 0x00000002;
+    const uint NotifyIconVersion4 = 4;
+    const nint ApplicationIconResourceId = 32512;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -93,6 +104,14 @@ sealed partial class Program
     private static partial nint DefWindowProcW(nint hWnd, uint msg, nint wParam, nint lParam);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint RegisterWindowMessageW(string lpString);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", EntryPoint = "LoadIconW")]
+    private static partial nint LoadIconW(nint hInstance, nint lpIconName);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     private static partial int GetMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
@@ -108,6 +127,30 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     private static partial nint SetTimer(nint hWnd, nint nIDEvent, uint uElapse, nint lpTimerFunc);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool KillTimer(nint hWnd, nint uIDEvent);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnregisterHotKey(nint hWnd, int id);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnhookWinEvent(nint hWinEventHook);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyWindow(nint hWnd);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial void PostQuitMessage(int nExitCode);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -134,6 +177,11 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "MessageBoxW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int MessageBoxW(nint hWnd, string text, string caption, uint type);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShellNotifyIconW(uint dwMessage, ref NOTIFYICONDATAW lpData);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MOUSEINPUT
@@ -192,6 +240,29 @@ sealed partial class Program
         public string lpszClassName;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NOTIFYICONDATAW
+    {
+        public uint cbSize;
+        public nint hWnd;
+        public uint uID;
+        public uint uFlags;
+        public uint uCallbackMessage;
+        public nint hIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public nint hBalloonIcon;
+    }
+
     private delegate nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam);
     private static readonly WndProc WndProcDelegate = WindowProc; // keep GC root for the lifetime of the class
 
@@ -201,6 +272,14 @@ sealed partial class Program
 
     private static ToggleCore Core = null!;
     private static DiagnosticTrace Trace = DiagnosticTrace.Disabled;
+    private static nint AppWindow;
+    private static nint AppIcon;
+    private static nint VoiceUiHook;
+    private static uint TaskbarCreatedMessage;
+    private static bool HotkeyRegistered;
+    private static bool FocusTimerRunning;
+    private static bool TrayIconInstalled;
+    private static bool ShutdownRequested;
 
     static int Main()
     {
@@ -247,21 +326,36 @@ sealed partial class Program
             return 1;
         }
 
-        nint hwnd = CreateWindowExW(0, wndClass.lpszClassName, null, 0, 0, 0, 0, 0, HwndMessage, 0, hInstance, 0);
-        if (hwnd == 0)
+        AppWindow = CreateWindowExW(WsExToolWindow | WsExNoActivate, wndClass.lpszClassName, null, 0, 0, 0, 0, 0, 0, 0, hInstance, 0);
+        if (AppWindow == 0)
         {
             MessageBoxW(0, $"CreateWindow failed (Win32 {Marshal.GetLastPInvokeError()}).", "Voice Typing Toggle", 0x10);
             return 1;
         }
 
-        if (!RegisterHotKey(hwnd, HotkeyId, ModControl | ModAlt, 'H'))
+        if (!RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
         {
             MessageBoxW(0, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
                 "Voice Typing Toggle", 0x10);
             return 1;
         }
-        _ = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
-        _ = SetTimer(hwnd, TimerId, FocusWatchIntervalMs, 0);
+        HotkeyRegistered = true;
+        VoiceUiHook = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
+        FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+        TaskbarCreatedMessage = RegisterWindowMessageW("TaskbarCreated");
+        AppIcon = LoadIconW(hInstance, ApplicationIconResourceId);
+        if (AppIcon == 0)
+        {
+            MessageBoxW(AppWindow, "Could not load the embedded application icon.", "Voice Typing Toggle", 0x10);
+            RequestOrderlyShutdown();
+            return 1;
+        }
+
+        var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, RequestOrderlyShutdown);
+        if (!trayIcon.Install())
+        {
+            return 1;
+        }
 
         // Best-effort restore if the process exits while dictating.
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
@@ -283,7 +377,7 @@ sealed partial class Program
     {
         switch (msg)
         {
-            case WmHotkey when wParam == HotkeyId:
+            case WmHotkey when wParam == HotkeyId && !ShutdownRequested:
                 TraceAction("hotkey");
                 Core.Toggle();
                 Trace.Flush();
@@ -298,7 +392,103 @@ sealed partial class Program
                 Trace.Flush();
                 return 1; // allow shutdown
         }
+        if (msg == TaskbarCreatedMessage && !ShutdownRequested)
+        {
+            TrayIconInstalled = false;
+            var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, RequestOrderlyShutdown);
+            trayIcon.RecreateAfterTaskbarRestart();
+            return 0;
+        }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
+    static bool TryAddTrayIcon()
+    {
+        var data = new NOTIFYICONDATAW
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
+            hWnd = AppWindow,
+            uID = TrayIconId,
+            uFlags = NifMessage | NifIcon,
+            uCallbackMessage = WmTrayIcon,
+            hIcon = AppIcon,
+            szTip = "Voice Typing Toggle",
+            szInfo = string.Empty,
+            szInfoTitle = string.Empty,
+        };
+        if (!ShellNotifyIconW(NimAdd, ref data))
+        {
+            return false;
+        }
+
+        data.uTimeoutOrVersion = NotifyIconVersion4;
+        if (ShellNotifyIconW(NimSetVersion, ref data))
+        {
+            TrayIconInstalled = true;
+            return true;
+        }
+
+        _ = ShellNotifyIconW(NimDelete, ref data);
+        return false;
+    }
+
+    static void ReportTrayIconFailure(bool isRecreation)
+    {
+        string text = isRecreation
+            ? "Voice Typing Toggle could not restore its notification icon after Explorer restarted. The application will close."
+            : "Voice Typing Toggle could not add its notification icon. The application will close.";
+        MessageBoxW(AppWindow, text, "Voice Typing Toggle", 0x10);
+    }
+
+    // T4 expands this shared entry point into the bounded, reason-aware shutdown
+    // coordinator. T2 needs it now so a tray-install failure cannot leave an
+    // invisible background process running.
+    static void RequestOrderlyShutdown()
+    {
+        if (ShutdownRequested)
+        {
+            return;
+        }
+        ShutdownRequested = true;
+        TraceAction("tray-shutdown-requested");
+        Core.RestoreIfDictating();
+
+        if (TrayIconInstalled)
+        {
+            var data = new NOTIFYICONDATAW
+            {
+                cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
+                hWnd = AppWindow,
+                uID = TrayIconId,
+                szTip = string.Empty,
+                szInfo = string.Empty,
+                szInfoTitle = string.Empty,
+            };
+            _ = ShellNotifyIconW(NimDelete, ref data);
+            TrayIconInstalled = false;
+        }
+        if (FocusTimerRunning)
+        {
+            _ = KillTimer(AppWindow, TimerId);
+            FocusTimerRunning = false;
+        }
+        if (VoiceUiHook != 0)
+        {
+            _ = UnhookWinEvent(VoiceUiHook);
+            VoiceUiHook = 0;
+        }
+        if (HotkeyRegistered)
+        {
+            _ = UnregisterHotKey(AppWindow, HotkeyId);
+            HotkeyRegistered = false;
+        }
+        if (AppWindow != 0)
+        {
+            _ = DestroyWindow(AppWindow);
+            AppWindow = 0;
+        }
+        PostQuitMessage(0);
+        Trace.Flush();
     }
 
     // A background process cannot normally take foreground; attaching our input

@@ -88,6 +88,58 @@ public class SelectEnglishLayoutTests
     }
 }
 
+public class TrayIconLifecycleTests
+{
+    [Fact]
+    public void InitialAddFailureReportsAndRequestsShutdown()
+    {
+        var reportedRecreations = new List<bool>();
+        int shutdownRequests = 0;
+        var lifecycle = new TrayIconLifecycle(
+            tryAdd: () => false,
+            reportFailure: reportedRecreations.Add,
+            requestOrderlyShutdown: () => shutdownRequests++);
+
+        bool installed = lifecycle.Install();
+
+        Assert.False(installed);
+        Assert.Equal([false], reportedRecreations);
+        Assert.Equal(1, shutdownRequests);
+    }
+
+    [Fact]
+    public void TaskbarRecreationFailureReportsAndRequestsShutdown()
+    {
+        var reportedRecreations = new List<bool>();
+        int shutdownRequests = 0;
+        var lifecycle = new TrayIconLifecycle(
+            tryAdd: () => false,
+            reportFailure: reportedRecreations.Add,
+            requestOrderlyShutdown: () => shutdownRequests++);
+
+        lifecycle.RecreateAfterTaskbarRestart();
+
+        Assert.Equal([true], reportedRecreations);
+        Assert.Equal(1, shutdownRequests);
+    }
+
+    [Fact]
+    public void SuccessfulAddDoesNotReportOrRequestShutdown()
+    {
+        int reports = 0;
+        int shutdownRequests = 0;
+        var lifecycle = new TrayIconLifecycle(
+            tryAdd: () => true,
+            reportFailure: _ => reports++,
+            requestOrderlyShutdown: () => shutdownRequests++);
+
+        lifecycle.RecreateAfterTaskbarRestart();
+
+        Assert.Equal(0, reports);
+        Assert.Equal(0, shutdownRequests);
+    }
+}
+
 public class ToggleCoreTests
 {
     const nint EnUs = 0x040B0409;
