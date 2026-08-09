@@ -1094,6 +1094,14 @@ sealed partial class Program
     // point, rollback is layout-only.
     static void CompleteWinHInjection(bool forceClose = false)
     {
+        // No-op when nothing is armed: every valid caller requires an armed
+        // hold, and Win32 does not remove already-queued WM_TIMER messages on
+        // KillTimer, so a stale hold-timer message must never re-inject input
+        // after the gesture was completed or listening was disabled.
+        if (!WinHHoldArmed)
+        {
+            return;
+        }
         WinHHoldArmed = false;
         _ = KillTimer(AppWindow, WinHHoldTimerId);
         bool hDown = SendKey(0, 0x23, up: false, useScanCode: true);
