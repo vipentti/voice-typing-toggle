@@ -128,19 +128,35 @@ If the existing watchdog reaches its bound but the Voice Typing UI associated
 with this stop is still visible, run an equivalent bounded shutdown-specific
 Escape, retry, layout-restore, and visibility-confirmation pass while the message
 infrastructure remains alive. Successful Exit is permitted only after the UI is
-confirmed absent and layout restoration has completed. If the bounded pass still
-cannot establish that outcome, cancel shutdown, keep the tray and monitoring
-resources running, restore command handling, and show a visible error. This is a
-failed Exit rather than terminating and allowing Voice Typing to reopen later.
+confirmed absent and layout restoration has completed. For a user-requested
+Exit, if the bounded pass still cannot establish that outcome, cancel shutdown,
+keep the tray and monitoring resources running, restore command handling, and
+show a visible error. This is a failed user Exit rather than terminating and
+allowing Voice Typing to reopen later.
 
-Only after the required stop work is complete may shutdown remove the tray icon,
-stop the timer, unregister the hotkey, release the WinEvent hook and icon
-resources, destroy the hidden window, and end the message loop. Process-exit
-restoration remains a final best-effort fallback for external termination.
+Record whether shutdown was requested by the user or by fatal tray loss. A
+failed `TaskbarCreated` re-add takes precedence over the cancellable user-Exit
+rule because no notification icon remains. Run the same bounded stop monitoring
+and correction first. If closure still cannot be confirmed, show a fatal visible
+error explaining that Voice Typing may require manual dismissal, perform one
+final best-effort Escape, retry, and saved-layout restoration, then release
+resources and terminate. Do not restore command handling, retry icon
+installation, or continue the process without a tray icon. Initial `NIM_ADD`
+failure uses the same fatal mode, although startup has no active dictation or
+pending stop work to drain.
+
+Except for the explicitly bounded fatal tray-loss fallback above, only after the
+required stop work is complete may shutdown remove the tray icon, stop the timer,
+unregister the hotkey, release the WinEvent hook and icon resources, destroy the
+hidden window, and end the message loop. The fatal fallback may perform teardown
+after its final best-effort stop and layout restoration even when Voice Typing
+absence remains unconfirmed, because continuing without an icon is forbidden.
+Process-exit restoration remains a final best-effort fallback for external
+termination.
 
 If initial icon installation or later icon recreation fails, show a visible
-error and take the same orderly exit path rather than continuing as an
-unexpected invisible background process.
+error and enter fatal tray-loss shutdown rather than continuing as an unexpected
+invisible background process.
 
 ## Acceptance Criteria
 
@@ -170,9 +186,10 @@ unexpected invisible background process.
 - Selecting Exit while the core is Idle but `StopConfirmPending` is true waits
   for that pending stop work under the same completion rule instead of tearing
   down its timer or WinEvent hook.
-- After a successful Exit, Voice Typing does not reopen late. If bounded shutdown
-  correction cannot confirm closure, the utility reports a visible error and
-  remains running rather than claiming a successful Exit.
+- After a successful user-requested Exit, Voice Typing does not reopen late. If
+  bounded shutdown correction cannot confirm closure, the utility reports a
+  visible error and remains running with its tray icon rather than claiming a
+  successful Exit.
 - Restarting Explorer while the utility runs restores exactly one working tray
   icon without restarting the utility.
 - A test-injected initial `NIM_ADD` failure invokes the production-wired visible
@@ -180,9 +197,11 @@ unexpected invisible background process.
   startup cleanup and message-loop termination so no invisible background
   process remains.
 - After a successful initial add, a test-injected re-add failure on
-  `TaskbarCreated` invokes the same visible error and orderly-shutdown path. Any
-  pending stop confirmation still completes before teardown, and the process
-  does not continue invisibly without its icon.
+  `TaskbarCreated` invokes fatal tray-loss shutdown. Any pending stop
+  confirmation receives the normal bounded monitoring and correction window. If
+  closure remains unconfirmed, the utility reports that fatal condition, makes
+  the final best-effort stop and saved-layout restoration, and terminates rather
+  than cancelling shutdown or continuing invisibly without its icon.
 - Existing hotkey, layout-switching, focus recovery, failure handling, tracing,
   and non-elevated operation continue to behave as before.
 - Native AOT Release publishing still produces the expected standalone
@@ -208,8 +227,14 @@ actions. For recreation, make initial add succeed and the next add triggered by
 `TaskbarCreated` fail; assert the same error route is invoked, shutdown is
 requested, existing pending-stop monitoring is retained when applicable, and
 terminal teardown occurs only through the already-covered shutdown completion
-rule. These tests must prove that neither failure path can leave the application
-running invisibly. They do not need to force the real Windows shell API to fail.
+rule. Add the combined case where re-add fails, stop confirmation is pending,
+and bounded closure cannot be confirmed. Assert that fatal tray-loss precedence
+prevents shutdown cancellation, invokes the fatal visible-error and final
+best-effort stop or layout-restore collaborators, and reaches terminal teardown.
+The equivalent unconfirmed user-requested Exit must still cancel shutdown and
+retain its working tray icon. These tests must prove that neither icon failure
+path can leave the application running invisibly. They do not need to force the
+real Windows shell API to fail.
 
 Manually verify on Windows:
 
