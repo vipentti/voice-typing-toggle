@@ -45,6 +45,12 @@ sealed partial class Program
     const uint KeyeventfKeyUp = 0x0002;
     const uint KeyeventfScanCode = 0x0008;
     const ushort VK_RWIN = 0x5C;
+    const ushort VK_LWIN = 0x5B;
+    const ushort VK_H = 0x48;
+    const int WhKeyboardLl = 13;
+    const uint LlkhfInjected = 0x00000010;
+    const uint WmKeyDown = 0x0100;
+    const uint WmSysKeyDown = 0x0104;
 
     // stop-flash watchdog: watch for the TextInputHost "Listening..." popup
     // reappearing after a stop (the bar reopened; the core runs a corrective pass).
@@ -98,6 +104,19 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial uint SendInput(uint cInputs, INPUT[] pInputs, int cbSize);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial nint SetWindowsHookExW(int idHook, KeyboardProc lpfn, nint hMod, uint dwThreadId);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnhookWindowsHookEx(nint hhk);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "RegisterHotKey")]
@@ -262,6 +281,16 @@ sealed partial class Program
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct MSG
     {
         public nint hwnd;
@@ -311,6 +340,13 @@ sealed partial class Program
     private delegate void WinEventProc(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
     private static readonly WinEventProc WinEventCallback = OnVoiceUiEvent; // rooted: out-of-context hook calls back through the message loop
     private const uint InputKeyboard = 1;
+
+    private delegate nint KeyboardProc(int nCode, nint wParam, nint lParam);
+    private static readonly KeyboardProc KeyboardProcDelegate = LowLevelKeyboardProc; // rooted: the hook calls back through the message loop
+    private static nint KeyboardHook;
+    private static bool LeftWinDown;
+    private static bool RightWinDown;
+    private static bool WinHDispatched; // one observation per physical Win+H chord; re-armed on H or Win keyup
 
     private static ToggleCore Core = null!;
     private static DiagnosticTrace Trace = DiagnosticTrace.Disabled;
@@ -384,6 +420,10 @@ sealed partial class Program
         HotkeyRegistered = true;
         VoiceUiHook = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
         FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+        // Physical Win+H observation (race interception): installed by default
+        // (opt-out); the tray checkbox toggles it live (T4). Failure is
+        // non-fatal: native Win+H behavior simply stays untouched.
+        TryInstallKeyboardHook();
         TaskbarCreatedMessage = RegisterWindowMessageW("TaskbarCreated");
         AppIcon = LoadIconW(hInstance, ApplicationIconResourceId);
         if (AppIcon == 0)
@@ -702,6 +742,10 @@ sealed partial class Program
             _ = UnhookWinEvent(VoiceUiHook);
             VoiceUiHook = 0;
         }
+        if (KeyboardHook != 0)
+        {
+            UninstallKeyboardHook();
+        }
         if (HotkeyRegistered)
         {
             _ = UnregisterHotKey(AppWindow, HotkeyId);
@@ -797,6 +841,96 @@ sealed partial class Program
             TraceAction("send-input-failed");
             Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
         }
+    }
+
+    // Physical Win+H observation (WH_KEYBOARD_LL). The hook runs BEFORE the
+    // event is delivered onward, so the callback must never swallow, block, or
+    // inject input; it only observes and traces here (T3 wires the dispatch).
+    static nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam)
+    {
+        if (nCode < 0)
+        {
+            return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+        }
+        try
+        {
+            // Never inspect key content beyond vk/flags. Injected events (our
+            // own SendWinH) must not arm or trigger the chord.
+            var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            if ((info.flags & LlkhfInjected) != 0)
+            {
+                return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+            }
+            bool down = (uint)wParam == WmKeyDown || (uint)wParam == WmSysKeyDown;
+            switch (info.vkCode)
+            {
+                case VK_LWIN:
+                    LeftWinDown = down;
+                    if (!down)
+                    {
+                        WinHDispatched = false; // chord ended: re-arm
+                    }
+                    break;
+                case VK_RWIN:
+                    RightWinDown = down;
+                    if (!down)
+                    {
+                        WinHDispatched = false;
+                    }
+                    break;
+                case VK_H when down && (LeftWinDown || RightWinDown) && !WinHDispatched:
+                    WinHDispatched = true; // auto-repeat H keydowns stay suppressed until re-arm
+                    TraceAction("winh-observed");
+                    OnWinHObservation();
+                    break;
+                case VK_H when !down:
+                    WinHDispatched = false;
+                    break;
+            }
+        }
+#pragma warning disable CA1031 // an exception escaping a native callback terminates a Native AOT process
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            TraceAction("hook-error"); // never swallow input, even on failure
+        }
+        return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+    }
+
+    // T1: observation seam, trace-only. T3 wires the race-start (Idle) and
+    // native-stop (Dictating) dispatch through ToggleCore.
+    static void OnWinHObservation()
+    {
+    }
+
+    static bool TryInstallKeyboardHook()
+    {
+        if (KeyboardHook != 0)
+        {
+            return true;
+        }
+        KeyboardHook = SetWindowsHookExW(WhKeyboardLl, KeyboardProcDelegate, 0, 0);
+        if (KeyboardHook == 0)
+        {
+            TraceAction("hook-install-failed");
+            return false;
+        }
+        TraceAction("hook-installed");
+        return true;
+    }
+
+    static void UninstallKeyboardHook()
+    {
+        if (KeyboardHook == 0)
+        {
+            return;
+        }
+        _ = UnhookWindowsHookEx(KeyboardHook);
+        KeyboardHook = 0;
+        LeftWinDown = false;
+        RightWinDown = false;
+        WinHDispatched = false;
+        TraceAction("hook-uninstalled");
     }
 
     // stop-flash watchdog: the Voice Typing "Listening..." pointer is a
