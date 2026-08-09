@@ -25,8 +25,13 @@ choosing one source.
   requirements, services, drivers, DLL injection, background networking, UI
   automation, or low-level keyboard hooks unless the task explicitly requires
   them.
-- Do not intercept the physical `Win+H` shortcut unless that future feature is
-  explicitly requested. The normal toggle hotkey is `Ctrl+Alt+H`.
+- Physical `Win+H` interception is an implemented opt-out feature: a
+  `WH_KEYBOARD_LL` hook observes the shortcut (race variant, never
+  swallows/replays Win+H) and is gated by the tray "Intercept Win+H"
+  checkbox (checked by default, session-only). While dictating, the hook also
+  handles the close keys: `Escape` restores state after the native close;
+  `Enter` and `Space` are swallowed and close the bar (tray-gated, checked by
+  default). The normal toggle hotkey is `Ctrl+Alt+H` and stays always active.
 - Never log dictated text, typed content, or captured keystrokes.
 - Save and restore the actual active `HKL`; never assume the original layout is
   Finnish. Keyboard layouts belong to input threads, not globally to a process

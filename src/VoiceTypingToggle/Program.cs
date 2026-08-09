@@ -15,12 +15,16 @@ sealed partial class Program
     const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
+    const uint WmCloseKeyStop = WmApp + 2;
+    const uint WmWinHDown = WmApp + 3;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
     const uint WsExToolWindow = 0x00000080;
     const uint WsExNoActivate = 0x08000000;
     const int HotkeyId = 1;
     const int TimerId = 2;
+    const int WinHHoldTimerId = 3;
+    const int WinHHoldMs = 500;
     const uint TrayIconId = 1;
     const uint NimAdd = 0x00000000;
     const uint NimDelete = 0x00000002;
@@ -36,15 +40,29 @@ sealed partial class Program
     const uint MfString = 0x00000000;
     const uint MfDisabled = 0x00000002;
     const uint MfGrayed = 0x00000001;
+    const uint MfChecked = 0x00000008;
+    const uint MfUnchecked = 0x00000000;
     const uint MfSeparator = 0x00000800;
     const uint TpmRightButton = 0x0002;
     const uint TpmReturnCommand = 0x0100;
     const uint MenuExitId = 1;
+    const uint MenuInterceptWinHId = 2;
+    const uint MenuEnterCloseId = 3;
+    const uint MenuSpaceCloseId = 4;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
     const uint KeyeventfScanCode = 0x0008;
     const ushort VK_RWIN = 0x5C;
+    const ushort VK_LWIN = 0x5B;
+    const ushort VK_H = 0x48;
+    const ushort VK_ESCAPE = 0x1B;
+    const ushort VK_RETURN = 0x0D;
+    const ushort VK_SPACE = 0x20;
+    const int WhKeyboardLl = 13;
+    const uint LlkhfInjected = 0x00000010;
+    const uint WmKeyDown = 0x0100;
+    const uint WmSysKeyDown = 0x0104;
 
     // stop-flash watchdog: watch for the TextInputHost "Listening..." popup
     // reappearing after a stop (the bar reopened; the core runs a corrective pass).
@@ -98,6 +116,19 @@ sealed partial class Program
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial uint SendInput(uint cInputs, INPUT[] pInputs, int cbSize);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial nint SetWindowsHookExW(int idHook, KeyboardProc lpfn, nint hMod, uint dwThreadId);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    private static partial nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnhookWindowsHookEx(nint hhk);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "RegisterHotKey")]
@@ -262,6 +293,16 @@ sealed partial class Program
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct MSG
     {
         public nint hwnd;
@@ -312,6 +353,13 @@ sealed partial class Program
     private static readonly WinEventProc WinEventCallback = OnVoiceUiEvent; // rooted: out-of-context hook calls back through the message loop
     private const uint InputKeyboard = 1;
 
+    private delegate nint KeyboardProc(int nCode, nint wParam, nint lParam);
+    private static readonly KeyboardProc KeyboardProcDelegate = LowLevelKeyboardProc; // rooted: the hook calls back through the message loop
+    private static nint KeyboardHook;
+    private static bool LeftWinDown;
+    private static bool RightWinDown;
+    private static bool WinHDispatched; // one observation per physical Win+H chord; re-armed on H or Win keyup
+
     private static ToggleCore Core = null!;
     private static DiagnosticTrace Trace = DiagnosticTrace.Disabled;
     private static nint AppWindow;
@@ -321,6 +369,9 @@ sealed partial class Program
     private static bool HotkeyRegistered;
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
+    private static bool WinHHoldArmed; // injected right-Win is down: shutdown must release it
+    private static bool EnterCloseEnabled = true;  // tray-gated: close dictation on physical Enter while dictating
+    private static bool SpaceCloseEnabled = true;  // tray-gated: close dictation on physical Space while dictating
     private static readonly ShutdownDecision ShutdownPolicy = new();
 
     static int Main()
@@ -330,7 +381,17 @@ sealed partial class Program
 
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
-        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count) : 0;
+        // Prefer the English layout on the user's current physical keyboard:
+        // switching only the language (same klid) is stable mid-gesture, while
+        // a klid switch during a held key broke the shell's Win-combo handling.
+        nint currentHkl = 0;
+        nint foreground = GetForegroundWindow();
+        if (foreground != 0)
+        {
+            uint tid = GetWindowThreadProcessId(foreground, out _);
+            currentHkl = tid != 0 ? GetKeyboardLayout(tid) : 0;
+        }
+        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count, currentHkl != 0 ? (uint)currentHkl & 0xFFFF0000 : 0) : 0;
         if (englishLayout == 0)
         {
             MessageBoxW(0, "No English keyboard layout is installed. Voice Typing Toggle cannot start.",
@@ -344,6 +405,7 @@ sealed partial class Program
             GetThreadId = h => GetWindowThreadProcessId(h, out _),
             GetLayout = GetKeyboardLayout,
             RequestLayout = RequestLayout,
+            RequestLayoutBounded = RequestLayoutHookSafe,
             SendWinH = SendWinH,
             SendEscape = SendEscape,
             RestoreFocus = RestoreFocus,
@@ -384,6 +446,10 @@ sealed partial class Program
         HotkeyRegistered = true;
         VoiceUiHook = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
         FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
+        // Physical Win+H observation (race interception): installed by default
+        // (opt-out); the tray checkbox toggles it live (T4). Failure is
+        // non-fatal: native Win+H behavior simply stays untouched.
+        TryInstallKeyboardHook();
         TaskbarCreatedMessage = RegisterWindowMessageW("TaskbarCreated");
         AppIcon = LoadIconW(hInstance, ApplicationIconResourceId);
         if (AppIcon == 0)
@@ -432,12 +498,52 @@ sealed partial class Program
                 ContinueShutdownIfNeeded();
                 Trace.Flush();
                 return 0;
+            case WmTimer when wParam == WinHHoldTimerId:
+                CompleteWinHInjection();
+                return 0;
             case WmQueryEndSession:
                 TraceAction("query-end-session");
                 Core.RestoreIfDictating();
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 1; // allow shutdown
+            case WmCloseKeyStop when ShutdownPolicy.Kind is null:
+                // Deferred close-on-key stop: the swallowed physical Enter or
+                // Space cannot close the bar itself, so the standard
+                // Escape-first stop runs here on the message loop (never from
+                // the hook callback).
+                TraceAction("close-key-stop");
+                if (Core.IsDictating)
+                {
+                    Core.StopDictation();
+                }
+                UpdateTrayTooltip();
+                Trace.Flush();
+                return 0;
+            case WmWinHDown when ShutdownPolicy.Kind is null:
+                // Async Win+H gesture, step 1: the loop is free (no nested
+                // message pump), the low-level hook stays responsive, and the
+                // injected right-Win chains to the shell immediately.
+                if (!SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true))
+                {
+                    // Win-down was never injected: no gesture is armed, so no
+                    // hold timer may fire H/Win-up/Escape into the foreground.
+                    TraceAction("winh-win-down-failed");
+                    Core.RestoreIfDictating();
+                    return 0;
+                }
+                TraceAction("winh-win-down");
+                WinHHoldArmed = true;
+                if (SetTimer(AppWindow, WinHHoldTimerId, WinHHoldMs, 0) == 0)
+                {
+                    // The hold timer could not be created: finish the gesture
+                    // synchronously so the injected Win is never left held,
+                    // then roll the armed session back.
+                    TraceAction("winh-timer-failed");
+                    CompleteWinHInjection(forceClose: true);
+                    Core.RestoreIfDictating();
+                }
+                return 0;
             case WmTrayIcon when ShutdownPolicy.Kind is null:
                 HandleTrayIconMessage(wParam, lParam);
                 return 0;
@@ -525,6 +631,12 @@ sealed partial class Program
             _ = AppendMenuW(menu, informationalFlags, 0, $"Status: {CurrentStatus}");
             _ = AppendMenuW(menu, informationalFlags, 0, "Hotkey: Ctrl+Alt+H");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
+            // Session-only interception and close-key toggles; the checkmarks
+            // reflect the live state.
+            _ = AppendMenuW(menu, MfString | (KeyboardHook != 0 ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
+            _ = AppendMenuW(menu, MfString | (EnterCloseEnabled ? MfChecked : MfUnchecked), MenuEnterCloseId, "Close dictation on Enter");
+            _ = AppendMenuW(menu, MfString | (SpaceCloseEnabled ? MfChecked : MfUnchecked), MenuSpaceCloseId, "Close dictation on Space");
+            _ = AppendMenuW(menu, MfSeparator, 0, null);
             _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
 
             _ = SetForegroundWindow(AppWindow);
@@ -535,11 +647,39 @@ sealed partial class Program
             {
                 RequestOrderlyShutdown(ShutdownKind.UserExit);
             }
+            else if (command == MenuInterceptWinHId)
+            {
+                ToggleInterception();
+            }
+            else if (command == MenuEnterCloseId)
+            {
+                EnterCloseEnabled = !EnterCloseEnabled;
+                TraceAction(EnterCloseEnabled ? "enter-close-on" : "enter-close-off");
+            }
+            else if (command == MenuSpaceCloseId)
+            {
+                SpaceCloseEnabled = !SpaceCloseEnabled;
+                TraceAction(SpaceCloseEnabled ? "space-close-on" : "space-close-off");
+            }
         }
         finally
         {
             _ = DestroyMenu(menu);
         }
+    }
+
+    static void ToggleInterception()
+    {
+        if (KeyboardHook != 0)
+        {
+            UninstallKeyboardHook(); // native Win+H behavior returns untouched
+        }
+        else
+        {
+            TryInstallKeyboardHook();
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
     }
 
     static string CurrentStatus => Core.IsDictating ? "Dictating" : "Idle";
@@ -697,10 +837,22 @@ sealed partial class Program
             _ = KillTimer(AppWindow, TimerId);
             FocusTimerRunning = false;
         }
+        if (WinHHoldArmed)
+        {
+            // The injected right-Win is still down. Finish the gesture
+            // (H + Win up + Escape) instead of a bare Win-up, which would open
+            // the Start menu.
+            CompleteWinHInjection();
+        }
+        _ = KillTimer(AppWindow, WinHHoldTimerId);
         if (VoiceUiHook != 0)
         {
             _ = UnhookWinEvent(VoiceUiHook);
             VoiceUiHook = 0;
+        }
+        if (KeyboardHook != 0)
+        {
+            UninstallKeyboardHook();
         }
         if (HotkeyRegistered)
         {
@@ -756,27 +908,108 @@ sealed partial class Program
         return requested;
     }
 
+    // Hook-callback budget: worst case ~100 ms here plus ~100 ms WaitForLayout,
+    // so the Idle race-start callback stays within its ~200 ms bound. The
+    // 1000 ms seam above remains the only request path for Ctrl+Alt+H.
+    static bool RequestLayoutHookSafe(nint hwnd, nint hkl)
+    {
+        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 100, out _) != 0;
+        TraceAction(requested ? $"layout-request-hook-safe-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-hook-safe-failed-0x{hwnd:X}-0x{hkl:X}");
+        return requested;
+    }
+
     static void SendWinH()
     {
         TraceAction("winh-begin");
-        // Empirically verified recipe: left-Win injection is ignored by the shell;
-        // right-Win as extended scancode fires Win-key hotkeys. H must be a scancode.
-        SendKey(VK_RWIN, 0x5B, up: false, useScanCode: false, extended: true);
-        Thread.Sleep(500);
-        SendKey(0, 0x23, up: false, useScanCode: true);
-        SendKey(0, 0x23, up: true, useScanCode: true);
-        SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
-        TraceAction("winh-sent");
+        // Async gesture: post step 1 instead of blocking the loop. The
+        // verified recipe (right-Win down, hold, H as scancode, right-Win up)
+        // is completed by the hold timer on the free message loop, so the
+        // low-level hook chains every injected event to the shell immediately
+        // and no nested message pump or reentrancy guard is needed. The shell
+        // sees the same timing as the original synchronous recipe. If the
+        // post fails, no gesture is coming: roll the armed session back now.
+        if (!PostMessageW(AppWindow, WmWinHDown, 0, 0))
+        {
+            TraceAction("winh-queue-failed");
+            Core.RestoreIfDictating();
+        }
+    }
+
+    // Async Win+H gesture, step 2 (hold timer): complete the recipe, or abort
+    // if the session ended during the hold. Completing with H before
+    // releasing Win is mandatory: a bare Win-up opens the Start menu. On
+    // abort the H opens the bar (or toggles a natively opened one) and the
+    // Escape closes it again; a stray Escape reaching the app matches the
+    // existing stop-before-launch semantics. Failure handling is structured
+    // around the activation point: once H-down succeeded, Windows may already
+    // act on Win+H, so rollback must close the bar with Escape; before that
+    // point, rollback is layout-only.
+    static void CompleteWinHInjection(bool forceClose = false)
+    {
+        WinHHoldArmed = false;
+        _ = KillTimer(AppWindow, WinHHoldTimerId);
+        bool hDown = SendKey(0, 0x23, up: false, useScanCode: true);
+        bool hUp = hDown && SendKey(0, 0x23, up: true, useScanCode: true);
+        bool winUp = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+        if (!hDown)
+        {
+            // Voice Typing was never triggered: layout-only rollback. Win may
+            // be logically held; release best-effort (a held Win is worse than
+            // a stray Start here).
+            TraceAction("winh-inject-failed");
+            if (!winUp)
+            {
+                _ = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true);
+            }
+            Core.RestoreIfDictating();
+            return;
+        }
+        if (!hUp || !winUp)
+        {
+            // The gesture reached the activation point: the bar may be open
+            // and listening. Release best-effort, close the bar with Escape,
+            // then roll back core state.
+            TraceAction("winh-inject-failed");
+            if (!hUp)
+            {
+                _ = SendKey(0, 0x23, up: true, useScanCode: true); // best-effort H release
+            }
+            if (!winUp)
+            {
+                _ = SendKey(VK_RWIN, 0x5B, up: true, useScanCode: false, extended: true); // best-effort Win release
+            }
+            SendEscape();
+            Core.RestoreIfDictating();
+            return;
+        }
+        if (forceClose || !Core.IsDictating)
+        {
+            SendEscape();
+            TraceAction("winh-aborted");
+        }
+        else
+        {
+            TraceAction("winh-sent");
+        }
     }
 
     static void SendEscape()
     {
-        SendKey(0, 0x01, up: false, useScanCode: true);
-        SendKey(0, 0x01, up: true, useScanCode: true);
-        TraceAction("escape-sent");
+        if (SendKey(0, 0x01, up: false, useScanCode: true) &&
+            SendKey(0, 0x01, up: true, useScanCode: true))
+        {
+            TraceAction("escape-sent");
+        }
+        else
+        {
+            TraceAction("escape-inject-failed");
+        }
     }
 
-    static void SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
+    // Returns true when SendInput accepted the event. No core-state side
+    // effects here: the Win+H gesture owns its rollback, and the stop path
+    // restores unconditionally after its settle regardless of this result.
+    static bool SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
     {
         uint flags = (up ? KeyeventfKeyUp : 0) | (extended ? KeyeventfExtendedKey : 0) | (useScanCode ? KeyeventfScanCode : 0);
         var input = new INPUT
@@ -795,8 +1028,170 @@ sealed partial class Program
         if (SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 0)
         {
             TraceAction("send-input-failed");
-            Core.RestoreIfDictating(); // T8: SendInput failure restores immediately
+            return false;
         }
+        return true;
+    }
+
+    // Physical Win+H observation (WH_KEYBOARD_LL). The hook runs BEFORE the
+    // event is delivered onward, so the callback must never swallow, block, or
+    // inject input; it only observes and traces here (T3 wires the dispatch).
+    static nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam)
+    {
+        if (nCode < 0)
+        {
+            return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+        }
+        bool swallow = false;
+        try
+        {
+            // Never inspect key content beyond vk/flags. Injected events (our
+            // own SendWinH/SendEscape) must not arm or trigger the chord.
+            var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            if ((info.flags & LlkhfInjected) != 0)
+            {
+                return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+            }
+            bool down = (uint)wParam == WmKeyDown || (uint)wParam == WmSysKeyDown;
+            switch (info.vkCode)
+            {
+                case VK_LWIN:
+                    LeftWinDown = down;
+                    if (!down)
+                    {
+                        WinHDispatched = false; // chord ended: re-arm
+                    }
+                    break;
+                case VK_RWIN:
+                    RightWinDown = down;
+                    if (!down)
+                    {
+                        WinHDispatched = false;
+                    }
+                    break;
+                case VK_H when down && (LeftWinDown || RightWinDown) && !WinHDispatched:
+                    WinHDispatched = true; // auto-repeat H keydowns stay suppressed until re-arm
+                    TraceAction("winh-observed");
+                    OnWinHObservation();
+                    break;
+                case VK_H when !down:
+                    WinHDispatched = false;
+                    break;
+                case VK_ESCAPE when down && Core.IsDictating:
+                    // External close: the user's own Escape closes the bar; the
+                    // native-stop dispatch only restores the saved state. The
+                    // injected guard above keeps our own stop Escape from
+                    // re-triggering; auto-repeat is a no-op once the core is Idle.
+                    TraceAction("escape-observed");
+                    OnExternalCloseObservation();
+                    break;
+                case VK_RETURN when down && Core.IsDictating && EnterCloseEnabled:
+                    // The bar does not close on Enter natively. Swallow the key
+                    // (scoped exception to the no-swallow rule: a chained Enter
+                    // would reach the app as a stray newline) and close the bar
+                    // with the standard Escape-first stop from the message loop.
+                    // Swallow only when the deferred stop is actually queued.
+                    TraceAction("enter-observed");
+                    swallow = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
+                    break;
+                case VK_SPACE when down && Core.IsDictating && SpaceCloseEnabled:
+                    // Same as Enter: the bar does not close on Space natively.
+                    TraceAction("space-observed");
+                    swallow = PostMessageW(AppWindow, WmCloseKeyStop, 0, 0);
+                    break;
+            }
+        }
+#pragma warning disable CA1031 // an exception escaping a native callback terminates a Native AOT process
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            swallow = false; // failures never swallow input, even if the key was already matched
+            TraceAction("hook-error");
+        }
+        return swallow ? 1 : CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+    }
+
+    // Observation dispatch (called from the hook callback on the message-loop
+    // thread, BEFORE the event is chained onward). Idle: bounded synchronous
+    // race-start so English is confirmed before the native Win+H proceeds.
+    // Dictating: native stop only, which injects nothing; the physical press
+    // itself closes the bar, and restoration runs later on the focus-watch
+    // timer. Never dispatch while a shutdown drains.
+    static void OnWinHObservation()
+    {
+        // Never dispatch while a shutdown drains.
+        if (ShutdownPolicy.Kind is not null)
+        {
+            return;
+        }
+        TraceAction("winh-observation");
+        DispatchObservation();
+    }
+
+    // Physical Escape while dictating: the key itself closes the bar; only
+    // the saved state needs restoring.
+    static void OnExternalCloseObservation()
+    {
+        if (ShutdownPolicy.Kind is not null)
+        {
+            return;
+        }
+        TraceAction("external-close-observation");
+        DispatchObservation();
+    }
+
+    // Shared observation dispatch (called from the hook callback on the
+    // message-loop thread, BEFORE the event is chained onward). Idle: bounded
+    // synchronous race-start so English is confirmed before the native Win+H
+    // proceeds. Dictating: native stop only, which injects nothing; the
+    // physical press itself closes the bar, and restoration runs later on the
+    // focus-watch timer.
+    static void DispatchObservation()
+    {
+        if (Core.IsDictating)
+        {
+            Core.StopDictationNative();
+        }
+        else
+        {
+            nint hwnd = Core.GetForeground();
+            if (hwnd != 0)
+            {
+                Core.StartDictationRace(hwnd);
+            }
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
+    }
+
+    static bool TryInstallKeyboardHook()
+    {
+        if (KeyboardHook != 0)
+        {
+            return true;
+        }
+        KeyboardHook = SetWindowsHookExW(WhKeyboardLl, KeyboardProcDelegate, 0, 0);
+        if (KeyboardHook == 0)
+        {
+            TraceAction("hook-install-failed");
+            return false;
+        }
+        TraceAction("hook-installed");
+        return true;
+    }
+
+    static void UninstallKeyboardHook()
+    {
+        if (KeyboardHook == 0)
+        {
+            return;
+        }
+        _ = UnhookWindowsHookEx(KeyboardHook);
+        KeyboardHook = 0;
+        LeftWinDown = false;
+        RightWinDown = false;
+        WinHDispatched = false;
+        TraceAction("hook-uninstalled");
     }
 
     // stop-flash watchdog: the Voice Typing "Listening..." pointer is a

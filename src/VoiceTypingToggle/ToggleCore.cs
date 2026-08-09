@@ -6,10 +6,12 @@ internal sealed class ToggleCore
     const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
     const int SwitchTimeoutMs = 100; // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint LangEnUs = 0x0409;
+    const uint KlidMask = 0xFFFF0000;
     const int EscapeRetryMs = 30;          // stop-flash: Escape settle; restore lands ~+31-47 ms (tuned; 20/15/10 reopen the bar), see .tmp/stop-flash-findings.md
     const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
     const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
     const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
+    const int NativeStopRestoreTicks = 2;    // two timer callbacks, 250-500 ms: the physical close event must reach Windows before focus/layout restore
     const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
@@ -24,6 +26,7 @@ internal sealed class ToggleCore
     public Func<nint, uint> GetThreadId { get; set; } = static _ => 0;
     public Func<uint, nint> GetLayout { get; set; } = static _ => 0;
     public Func<nint, nint, bool> RequestLayout { get; set; } = static (_, _) => false;
+    public Func<nint, nint, bool> RequestLayoutBounded { get; set; } = static (_, _) => false; // race-start only: hook-callback budget, ~100 ms request
     public Action SendWinH { get; set; } = static () => { };
     public Action SendEscape { get; set; } = static () => { };
     public Func<nint, bool> RestoreFocus { get; set; } = static _ => false;
@@ -41,6 +44,8 @@ internal sealed class ToggleCore
     int stopConfirmCorrections;
     int stopConfirmTicksLeft;
     int barWaitTicksLeft;
+    bool nativeStopRestorePending;
+    int nativeStopRestoreTicksLeft;
 
     public ToggleCore(nint englishLayout) => EnglishLayout = englishLayout;
 
@@ -70,16 +75,25 @@ internal sealed class ToggleCore
         {
             return;
         }
+        // Resolve pending native-stop ownership BEFORE touching this target: a
+        // failed old restore leaves the new target untouched (no leaked English
+        // switch) and the snapshot stays armed for the timer to retry.
+        nint baseline = ResolvePendingNativeStop(hwnd);
+        if (baseline == 0)
+        {
+            Trace("restart-deferred");
+            return;
+        }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
 
         // Fail closed: only start voice typing after the English layout is confirmed active.
-        if (current != EnglishLayout &&
+        if (!IsEnglishLayout(current) &&
             (!RequestLayout(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
         {
             return; // stay Idle
         }
-        SavedLayout = current;
+        SavedLayout = baseline;
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
@@ -100,6 +114,99 @@ internal sealed class ToggleCore
         SavedWindow = 0;
         IsDictating = false;
         Trace("stop-idle");
+    }
+
+    // Physical Win+H race start: switch the foreground thread to English but
+    // do NOT inject Win+H; the native handler opens the bar from the physical
+    // press. Uses the bounded request seam so the hook callback stays within
+    // its ~200 ms worst-case budget. Fail-open: on failure the core stays Idle
+    // with no saved session and the physical Win+H proceeds natively.
+    public void StartDictationRace(nint hwnd)
+    {
+        if (!CompletePendingRestore(hwnd))
+        {
+            return;
+        }
+        // Same ordering as StartDictation: resolve the pending snapshot before
+        // any mutation of this target, so a failed old restore leaves it on
+        // its original layout and the physical press stays fail-open.
+        nint baseline = ResolvePendingNativeStop(hwnd);
+        if (baseline == 0)
+        {
+            Trace("restart-deferred");
+            return;
+        }
+        uint tid = GetThreadId(hwnd);
+        nint current = GetLayout(tid);
+        if (!IsEnglishLayout(current) &&
+            (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
+        {
+            Trace("race-layout-failed");
+            return; // stay Idle; no injected Win+H; native press proceeds
+        }
+        SavedLayout = baseline;
+        SavedWindow = hwnd;
+        IsDictating = true;
+        StopConfirmPending = false;
+        WaitingForBar = true;
+        barWaitTicksLeft = BarWaitTimeoutTicks;
+        Trace("race-start-armed");
+    }
+
+    // Physical Win+H stop: the native handler closes the bar from the physical
+    // press, which the hook already chained. No Escape before that chained
+    // event (it would close the bar and let the chained press reopen it), and
+    // no synchronous restore: the close happens after the callback returns, so
+    // restoration is deferred to the message-loop timer. Escape stays reserved
+    // for positive-evidence corrective passes.
+    public void StopDictationNative()
+    {
+        Trace("native-stop-begin");
+        ArmStopConfirm();
+        WaitingForBar = false;
+        nativeStopRestorePending = true;
+        nativeStopRestoreTicksLeft = NativeStopRestoreTicks;
+        SavedLayout = 0;
+        SavedWindow = 0;
+        IsDictating = false;
+        Trace("native-stop-armed");
+    }
+
+    // Resolves a pending native-stop snapshot BEFORE the new target is
+    // mutated. Returns the restore baseline for the new session, or 0 when the
+    // pending old restore could not complete (the snapshot stays armed for the
+    // timer to retry and the caller must not start). Same target: the
+    // snapshot's original layout is carried forward (the thread is still on
+    // English). Different target: the old target's layout is restored first,
+    // without stealing focus, and the new target's own layout is the baseline.
+    nint ResolvePendingNativeStop(nint hwnd)
+    {
+        if (!nativeStopRestorePending)
+        {
+            return GetLayout(GetThreadId(hwnd));
+        }
+        if (stopConfirmWindow == hwnd)
+        {
+            nativeStopRestorePending = false;
+            return stopConfirmLayout;
+        }
+        if (stopConfirmWindow != 0 && !RestoreLayout(stopConfirmWindow, stopConfirmLayout))
+        {
+            Trace("pending-restore-failed"); // snapshot stays armed; the timer retries
+            return 0;
+        }
+        nativeStopRestorePending = false;
+        return GetLayout(GetThreadId(hwnd));
+    }
+
+    void CompleteNativeStopRestore()
+    {
+        Trace("native-stop-restore");
+        if (stopConfirmWindow != 0)
+        {
+            _ = RestoreFocus(stopConfirmWindow);
+        }
+        RestoreLayout(stopConfirmWindow, stopConfirmLayout);
     }
 
     void ArmStopConfirm()
@@ -147,15 +254,25 @@ internal sealed class ToggleCore
         {
             return;
         }
+        _ = RunWatchdogCorrection();
+    }
+
+    // Positive-evidence corrective pass, bounded per stop: shared by the SHOW
+    // watchdog (OnVoiceUiShown) and the native-stop timer check. Returns true
+    // when a corrective pass actually ran (the caller may then skip its own
+    // restore: the pass already restored via the stopConfirm* snapshot).
+    bool RunWatchdogCorrection()
+    {
         if (stopConfirmCorrections-- <= 0)
         {
             StopConfirmPending = false;
             Trace("watchdog-correction-limit");
-            return;
+            return false;
         }
         Trace("watchdog-corrective-begin");
         RunStopSequence(corrective: true); // safe settle: a racy correction would just reopen the bar again
         stopConfirmTicksLeft = StopConfirmTimeoutTicks; // fresh expiry window for any further reopen
+        return true;
     }
 
     // Shutdown drain: the coordinator re-runs the canonical saved-stop
@@ -206,6 +323,21 @@ internal sealed class ToggleCore
         {
             StopConfirmPending = false;
             Trace("watchdog-expired");
+        }
+        if (nativeStopRestorePending)
+        {
+            // Positive evidence only: the transient popup being absent cannot
+            // prove closure. A corrective pass runs only when the popup is
+            // observed visible while the stop confirmation is pending.
+            bool corrected = StopConfirmPending && !IsDictating && IsVoiceUiVisible() && RunWatchdogCorrection();
+            if (--nativeStopRestoreTicksLeft <= 0)
+            {
+                nativeStopRestorePending = false;
+                if (!corrected)
+                {
+                    CompleteNativeStopRestore(); // the corrective pass already restored via the snapshot
+                }
+            }
         }
         if (!healedFocusLoss && !IsDictating && pendingRestoreWindow != 0)
         {
@@ -306,9 +438,33 @@ internal sealed class ToggleCore
         return WaitForLayout(tid, expected, SwitchTimeoutMs);
     }
 
+    // Any English primary language counts as English for the start decision;
+    // the utility must not switch a thread that is already dictating in some
+    // English variant (the klid of the installed variant may differ).
+    static bool IsEnglishLayout(nint hkl) => ((uint)hkl & 0xFF) == 0x09;
+
     // Pure selection logic: exact en-US first, then any English primary language.
+    // With a preferred keyboard id (klid), an exact en-US on that keyboard wins
+    // over other en-US variants: switching only the language keeps the user's
+    // physical keyboard mapping stable, which matters mid-gesture.
     public static nint SelectEnglishLayout(nint[] layouts, int count)
     {
+        return SelectEnglishLayout(layouts, count, 0);
+    }
+
+    public static nint SelectEnglishLayout(nint[] layouts, int count, uint preferredKlid)
+    {
+        if (preferredKlid != 0)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                uint lang = (uint)layouts[i] & 0xFFFF;
+                if (lang == LangEnUs && ((uint)layouts[i] & KlidMask) == preferredKlid)
+                {
+                    return layouts[i];
+                }
+            }
+        }
         nint fallback = 0;
         for (int i = 0; i < count; i++)
         {
