@@ -61,7 +61,15 @@ internal static partial class NativeMethods
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
-    internal static partial nint SetWinEventHook(uint eventMin, uint eventMax, nint hmodWinEventProc, WinEventProc pfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+    internal static partial nint SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        nint hmodWinEventProc,
+        WinEventProc pfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint dwFlags
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -82,6 +90,7 @@ internal static partial class NativeMethods
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern int GetWindowTextW(nint hWnd, char[] lpString, int nMaxCount);
+
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     internal static partial uint GetWindowThreadProcessId(nint hWnd, out uint processId);
@@ -97,7 +106,14 @@ internal static partial class NativeMethods
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
     internal static partial nint SendMessageTimeout(
-        nint hWnd, uint msg, nint wParam, nint lParam, uint flags, uint timeout, out nint result);
+        nint hWnd,
+        uint msg,
+        nint wParam,
+        nint lParam,
+        uint flags,
+        uint timeout,
+        out nint result
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", SetLastError = true)]
@@ -105,7 +121,12 @@ internal static partial class NativeMethods
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll", SetLastError = true)]
-    internal static partial nint SetWindowsHookExW(int idHook, KeyboardProc lpfn, nint hMod, uint dwThreadId);
+    internal static partial nint SetWindowsHookExW(
+        int idHook,
+        KeyboardProc lpfn,
+        nint hMod,
+        uint dwThreadId
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -126,9 +147,25 @@ internal static partial class NativeMethods
     internal static extern ushort RegisterClassW(ref WNDCLASSW wndClass);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial nint CreateWindowExW(uint dwExStyle, string lpClassName, string? lpWindowName,
-        uint dwStyle, int x, int y, int nWidth, int nHeight, nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
+    [LibraryImport(
+        "user32.dll",
+        EntryPoint = "CreateWindowExW",
+        StringMarshalling = StringMarshalling.Utf16
+    )]
+    internal static partial nint CreateWindowExW(
+        uint dwExStyle,
+        string lpClassName,
+        string? lpWindowName,
+        uint dwStyle,
+        int x,
+        int y,
+        int nWidth,
+        int nHeight,
+        nint hWndParent,
+        nint hMenu,
+        nint hInstance,
+        nint lpParam
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -144,7 +181,12 @@ internal static partial class NativeMethods
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
-    internal static partial int GetMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+    internal static partial int GetMessageW(
+        out MSG lpMsg,
+        nint hWnd,
+        uint wMsgFilterMin,
+        uint wMsgFilterMax
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -193,13 +235,30 @@ internal static partial class NativeMethods
     internal static partial nint CreatePopupMenu();
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [LibraryImport("user32.dll", EntryPoint = "AppendMenuW", StringMarshalling = StringMarshalling.Utf16)]
+    [LibraryImport(
+        "user32.dll",
+        EntryPoint = "AppendMenuW",
+        StringMarshalling = StringMarshalling.Utf16
+    )]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool AppendMenuW(nint hMenu, uint uFlags, nuint uIDNewItem, string? lpNewItem);
+    internal static partial bool AppendMenuW(
+        nint hMenu,
+        uint uFlags,
+        nuint uIDNewItem,
+        string? lpNewItem
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
-    internal static partial uint TrackPopupMenu(nint hMenu, uint uFlags, int x, int y, int nReserved, nint hWnd, nint prcRect);
+    internal static partial uint TrackPopupMenu(
+        nint hMenu,
+        uint uFlags,
+        int x,
+        int y,
+        int nReserved,
+        nint hWnd,
+        nint prcRect
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
@@ -219,7 +278,11 @@ internal static partial class NativeMethods
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+    internal static partial bool AttachThreadInput(
+        uint idAttach,
+        uint idAttachTo,
+        [MarshalAs(UnmanagedType.Bool)] bool fAttach
+    );
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [LibraryImport("kernel32.dll")]
@@ -234,35 +297,52 @@ internal static partial class NativeMethods
     internal static partial nint GetModuleHandleW(string? lpModuleName);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [LibraryImport("user32.dll", EntryPoint = "MessageBoxW", StringMarshalling = StringMarshalling.Utf16)]
+    [LibraryImport(
+        "user32.dll",
+        EntryPoint = "MessageBoxW",
+        StringMarshalling = StringMarshalling.Utf16
+    )]
     internal static partial int MessageBoxW(nint hWnd, string text, string caption, uint type);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport(
+        "shell32.dll",
+        EntryPoint = "Shell_NotifyIconW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true
+    )]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ShellNotifyIconW(uint dwMessage, ref NOTIFYICONDATAW lpData);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct MOUSEINPUT
     {
-        public int dx, dy;
-        public uint mouseData, dwFlags, time;
+        public int dx,
+            dy;
+        public uint mouseData,
+            dwFlags,
+            time;
         public nuint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct KEYBDINPUT
     {
-        public ushort wVk, wScan;
-        public uint dwFlags, time;
+        public ushort wVk,
+            wScan;
+        public uint dwFlags,
+            time;
         public nuint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Explicit)]
     internal struct InputUnion
     {
-        [FieldOffset(0)] public MOUSEINPUT mi;
-        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)]
+        public MOUSEINPUT mi;
+
+        [FieldOffset(0)]
+        public KEYBDINPUT ki;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -275,7 +355,8 @@ internal static partial class NativeMethods
     [StructLayout(LayoutKind.Sequential)]
     internal struct POINT
     {
-        public int x, y;
+        public int x,
+            y;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -293,7 +374,8 @@ internal static partial class NativeMethods
     {
         public nint hwnd;
         public uint message;
-        public nint wParam, lParam;
+        public nint wParam,
+            lParam;
         public uint time;
         public POINT pt;
     }
@@ -303,8 +385,12 @@ internal static partial class NativeMethods
     {
         public uint style;
         public WndProc lpfnWndProc;
-        public int cbClsExtra, cbWndExtra;
-        public nint hInstance, hIcon, hCursor, hbrBackground;
+        public int cbClsExtra,
+            cbWndExtra;
+        public nint hInstance,
+            hIcon,
+            hCursor,
+            hbrBackground;
         public string lpszMenuName;
         public string lpszClassName;
     }
@@ -318,13 +404,16 @@ internal static partial class NativeMethods
         public uint uFlags;
         public uint uCallbackMessage;
         public nint hIcon;
+
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
         public string szTip;
         public uint dwState;
         public uint dwStateMask;
+
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
         public string szInfo;
         public uint uTimeoutOrVersion;
+
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
         public string szInfoTitle;
         public uint dwInfoFlags;
@@ -334,7 +423,15 @@ internal static partial class NativeMethods
 
     internal delegate nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam);
 
-    internal delegate void WinEventProc(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+    internal delegate void WinEventProc(
+        nint hWinEventHook,
+        uint eventType,
+        nint hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime
+    );
     internal const uint InputKeyboard = 1;
 
     internal delegate nint KeyboardProc(int nCode, nint wParam, nint lParam);

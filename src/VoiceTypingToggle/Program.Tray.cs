@@ -41,16 +41,49 @@ sealed partial class Program
             // Session-only toggles; the checkmarks reflect the live intent
             // state. While listening is disabled the sub-toggles are grayed
             // and unselectable but keep their intent for the re-enable.
-            _ = AppendMenuW(menu, MfString | (ListeningEnabled ? MfChecked : MfUnchecked), MenuListeningId, "Enable listening");
-            _ = AppendMenuW(menu, subToggleFlags | (HotkeyEnabled ? MfChecked : MfUnchecked), MenuHotkeyId, "Enable Ctrl+Alt+H");
-            _ = AppendMenuW(menu, subToggleFlags | (InterceptWinHEnabled ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
-            _ = AppendMenuW(menu, subToggleFlags | (EnterCloseEnabled ? MfChecked : MfUnchecked), MenuEnterCloseId, "Close dictation on Enter");
-            _ = AppendMenuW(menu, subToggleFlags | (SpaceCloseEnabled ? MfChecked : MfUnchecked), MenuSpaceCloseId, "Close dictation on Space");
+            _ = AppendMenuW(
+                menu,
+                MfString | (ListeningEnabled ? MfChecked : MfUnchecked),
+                MenuListeningId,
+                "Enable listening"
+            );
+            _ = AppendMenuW(
+                menu,
+                subToggleFlags | (HotkeyEnabled ? MfChecked : MfUnchecked),
+                MenuHotkeyId,
+                "Enable Ctrl+Alt+H"
+            );
+            _ = AppendMenuW(
+                menu,
+                subToggleFlags | (InterceptWinHEnabled ? MfChecked : MfUnchecked),
+                MenuInterceptWinHId,
+                "Intercept Win+H"
+            );
+            _ = AppendMenuW(
+                menu,
+                subToggleFlags | (EnterCloseEnabled ? MfChecked : MfUnchecked),
+                MenuEnterCloseId,
+                "Close dictation on Enter"
+            );
+            _ = AppendMenuW(
+                menu,
+                subToggleFlags | (SpaceCloseEnabled ? MfChecked : MfUnchecked),
+                MenuSpaceCloseId,
+                "Close dictation on Space"
+            );
             _ = AppendMenuW(menu, MfSeparator, 0, null);
             _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
 
             _ = SetForegroundWindow(AppWindow);
-            uint command = TrackPopupMenu(menu, TpmRightButton | TpmReturnCommand, point.x, point.y, 0, AppWindow, 0);
+            uint command = TrackPopupMenu(
+                menu,
+                TpmRightButton | TpmReturnCommand,
+                point.x,
+                point.y,
+                0,
+                AppWindow,
+                0
+            );
             _ = PostMessageW(AppWindow, WmNull, 0, 0);
             ReturnFocusToNotificationArea();
             if (command == MenuExitId)
@@ -131,11 +164,19 @@ sealed partial class Program
             // is still disabled. On failure clear the hotkey intent and leave
             // the disabled state untouched (no rollback needed). On success
             // apply the rest in dependency order: timer, hook, then enable.
-            if (HotkeyEnabled && !HotkeyRegistered && !RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H'))
+            if (
+                HotkeyEnabled
+                && !HotkeyRegistered
+                && !RegisterHotKey(AppWindow, HotkeyId, ModControl | ModAlt, 'H')
+            )
             {
                 HotkeyEnabled = false;
-                MessageBoxW(AppWindow, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
-                    "Voice Typing Toggle", 0x10);
+                MessageBoxW(
+                    AppWindow,
+                    "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
+                    "Voice Typing Toggle",
+                    0x10
+                );
                 TraceAction("listening-reenable-hotkey-failed");
             }
             else
@@ -176,8 +217,12 @@ sealed partial class Program
         {
             // Direct registration failure: item stays unchecked, listening
             // and all other listening machinery stay as they are.
-            MessageBoxW(AppWindow, "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
-                "Voice Typing Toggle", 0x10);
+            MessageBoxW(
+                AppWindow,
+                "Could not register the Ctrl+Alt+H hotkey (it may be in use by another program).",
+                "Voice Typing Toggle",
+                0x10
+            );
             TraceAction("hotkey-register-failed");
         }
         UpdateTrayTooltip();
@@ -201,7 +246,10 @@ sealed partial class Program
         Trace.Flush();
     }
 
-    static string CurrentStatus => !ListeningEnabled ? "Disabled" : Core.IsDictating ? "Dictating" : "Idle";
+    static string CurrentStatus =>
+        !ListeningEnabled ? "Disabled"
+        : Core.IsDictating ? "Dictating"
+        : "Idle";
 
     static string TrayTooltip => $"Voice Typing Toggle: {CurrentStatus}";
 
@@ -275,5 +323,4 @@ sealed partial class Program
             : "Voice Typing Toggle could not add its notification icon. The application will close.";
         MessageBoxW(AppWindow, text, "Voice Typing Toggle", 0x10);
     }
-
 }

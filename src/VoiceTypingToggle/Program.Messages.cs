@@ -7,7 +7,11 @@ sealed partial class Program
     {
         switch (msg)
         {
-            case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null && ListeningEnabled && HotkeyEnabled:
+            case WmHotkey
+                when wParam == HotkeyId
+                    && ShutdownPolicy.Kind is null
+                    && ListeningEnabled
+                    && HotkeyEnabled:
                 TraceAction("hotkey");
                 Core.Toggle();
                 UpdateTrayTooltip();
@@ -41,7 +45,8 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 0;
-            case WmWinHDown when ShutdownPolicy.Kind is null && ListeningEnabled && Core.IsDictating:
+            case WmWinHDown
+                when ShutdownPolicy.Kind is null && ListeningEnabled && Core.IsDictating:
                 // Async Win+H gesture, step 1: the loop is free (no nested
                 // message pump), the low-level hook stays responsive, and the
                 // injected right-Win chains to the shell immediately.
@@ -112,11 +117,7 @@ sealed partial class Program
     static POINT PointFromPackedCoordinates(nint packed)
     {
         long value = packed;
-        return new POINT
-        {
-            x = (short)(value & 0xFFFF),
-            y = (short)((value >> 16) & 0xFFFF),
-        };
+        return new POINT { x = (short)(value & 0xFFFF), y = (short)((value >> 16) & 0xFFFF) };
     }
 
     static POINT PointFromContextMenu(nint lParam)
@@ -127,5 +128,4 @@ sealed partial class Program
         }
         return GetCursorPos(out POINT point) ? point : default;
     }
-
 }

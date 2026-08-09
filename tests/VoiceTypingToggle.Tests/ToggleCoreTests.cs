@@ -1,4 +1,4 @@
-// Unit tests for the pure seams: English-layout selection and the Idle/Dictating
+﻿// Unit tests for the pure seams: English-layout selection and the Idle/Dictating
 // state machine (ToggleCore), driven with fake system seams — no Win32 involved.
 
 namespace VoiceTypingToggle.Tests;
@@ -21,7 +21,10 @@ public class DiagnosticTraceTests
 
         string? path = DiagnosticTrace.ResolvePath("1", localAppData);
 
-        Assert.Equal(Path.GetFullPath(Path.Combine(localAppData, "VoiceTypingToggle", "trace.csv")), path);
+        Assert.Equal(
+            Path.GetFullPath(Path.Combine(localAppData, "VoiceTypingToggle", "trace.csv")),
+            path
+        );
     }
 
     [Fact]
@@ -49,7 +52,10 @@ public class DiagnosticTraceTests
 
             string[] lines = File.ReadAllLines(path);
             Assert.Equal(2, lines.Length);
-            Assert.Equal("tick,event,foreground,foregroundTid,foregroundHkl,isDictating,waitingForBar,stopConfirmPending", lines[0]);
+            Assert.Equal(
+                "tick,event,foreground,foregroundTid,foregroundHkl,isDictating,waitingForBar,stopConfirmPending",
+                lines[0]
+            );
             Assert.Equal("123,test-event,0x1234,7,0x40B040B,True,False,True", lines[1]);
         }
         finally
@@ -99,7 +105,10 @@ public class SelectEnglishLayoutTests
     public void PreferredKlidWithNoMatchFallsBackToGeneralSelection()
     {
         nint[] layouts = [EnUsUsKbd, EnUs, FiFi];
-        Assert.Equal(EnUsUsKbd, ToggleCore.SelectEnglishLayout(layouts, layouts.Length, 0x04070000)); // de-DE klid: no en-US on it
+        Assert.Equal(
+            EnUsUsKbd,
+            ToggleCore.SelectEnglishLayout(layouts, layouts.Length, 0x04070000)
+        ); // de-DE klid: no en-US on it
     }
 }
 
@@ -138,7 +147,7 @@ public class ShutdownDecisionTests
     {
         var decision = new ShutdownDecision();
         decision.Begin(ShutdownKind.UserExit, true, false); // user Exit while dictating
-        decision.Advance(false, false, true);               // bar still visible after watchdog expiry
+        decision.Advance(false, false, true); // bar still visible after watchdog expiry
 
         // Explorer restarts mid-drain and the icon cannot be recreated: the
         // coordinator escalates instead of letting the Exit cancel later.
@@ -181,8 +190,18 @@ public class ToggleCoreTests
             GetForeground = () => Target,
             GetThreadId = _ => 7,
             GetLayout = _ => layout,
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layout = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layout = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -264,7 +283,12 @@ public class ToggleCoreTests
         var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, escape-retry check, then bar-close drop to 0
         core.GetForeground = () => fg.Dequeue();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { restoreOrder.Add("focus"); focusTarget = h; return true; };
+        core.RestoreFocus = h =>
+        {
+            restoreOrder.Add("focus");
+            focusTarget = h;
+            return true;
+        };
 
         core.Toggle(); // start
         core.Toggle(); // stop
@@ -315,7 +339,11 @@ public class ToggleCoreTests
         var focusCalls = new List<nint>();
         var sleeps = new List<int>();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
         core.Sleep = sleeps.Add;
         var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, stop retry check, corrective retry check
         core.GetForeground = () => fg.Dequeue();
@@ -355,7 +383,11 @@ public class ToggleCoreTests
         var focusCalls = new List<nint>();
         var sleeps = new List<int>();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
         core.Sleep = sleeps.Add;
         var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, stop retry check, corrective retry check (candidate raised)
         core.GetForeground = () => fg.Dequeue();
@@ -534,7 +566,12 @@ public class ToggleCoreTests
             GetForeground = () => foreground,
             GetThreadId = _ => 7,
             GetLayout = _ => layout,
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layout = hkl;
+                return true;
+            },
             SendWinH = () => { },
             RestoreFocus = _ => true,
             Sleep = _ => { },
@@ -592,7 +629,8 @@ public class ToggleCoreTests
     public void RaceStartSwitchesViaBoundedSeamAndSkipsWinH()
     {
         var (core, requests) = NewCore();
-        core.RequestLayout = (_, _) => throw new InvalidOperationException("race-start must use the bounded seam");
+        core.RequestLayout = (_, _) =>
+            throw new InvalidOperationException("race-start must use the bounded seam");
         int winH = 0;
         core.SendWinH = () => winH++;
 
@@ -642,7 +680,11 @@ public class ToggleCoreTests
         int escapes = 0;
         var focusCalls = new List<nint>();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
 
         core.Toggle(); // start (injected path)
         core.StopDictationNative();
@@ -669,7 +711,11 @@ public class ToggleCoreTests
     {
         var (core, _) = NewCore();
         var focusCalls = new List<nint>();
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
 
         core.Toggle();
         core.StopDictationNative();
@@ -685,11 +731,15 @@ public class ToggleCoreTests
         int escapes = 0;
         var focusCalls = new List<nint>();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
 
-        core.Toggle();              // session A
+        core.Toggle(); // session A
         core.StopDictationNative(); // pending native-stop restore armed
-        core.Toggle();              // session B on the same window before any tick
+        core.Toggle(); // session B on the same window before any tick
         core.CheckDictationFocus(); // stale restore must not fire during session B
 
         Assert.True(core.IsDictating);
@@ -705,9 +755,9 @@ public class ToggleCoreTests
         int escapes = 0;
         core.SendEscape = () => escapes++;
 
-        core.Toggle();              // session A: FiFi -> EnUs, baseline FiFi
+        core.Toggle(); // session A: FiFi -> EnUs, baseline FiFi
         core.StopDictationNative(); // pending restore snapshot: FiFi
-        core.Toggle();              // session B on the same window (still English)
+        core.Toggle(); // session B on the same window (still English)
         Assert.True(core.IsDictating);
         Assert.Equal(FiFi, core.SavedLayout); // carried forward, not the active English
 
@@ -728,8 +778,18 @@ public class ToggleCoreTests
             GetForeground = () => Target,
             GetThreadId = h => h == Target ? 7u : 8u,
             GetLayout = tid => layouts[tid],
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -758,8 +818,18 @@ public class ToggleCoreTests
             GetForeground = () => Target,
             GetThreadId = h => h == Target ? 7u : 8u,
             GetLayout = tid => layouts[tid],
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -796,8 +866,18 @@ public class ToggleCoreTests
             GetForeground = () => Target,
             GetThreadId = h => h == Target ? 7u : 8u,
             GetLayout = tid => layouts[tid],
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -827,8 +907,18 @@ public class ToggleCoreTests
             GetForeground = () => Target,
             GetThreadId = h => h == Target ? 7u : 8u,
             GetLayout = tid => layouts[tid],
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -865,18 +955,32 @@ public class ToggleCoreTests
             GetForeground = () => foreground,
             GetThreadId = h => h == Target ? 7u : 8u,
             GetLayout = tid => layouts[tid],
-            RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
-            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layouts[h == Target ? 7u : 8u] = hkl; return true; },
+            RequestLayout = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
+            RequestLayoutBounded = (h, hkl) =>
+            {
+                requests.Add((h, hkl));
+                layouts[h == Target ? 7u : 8u] = hkl;
+                return true;
+            },
             SendWinH = () => { },
             SendEscape = () => { },
-            RestoreFocus = h => { focusCalls.Add(h); return true; },
+            RestoreFocus = h =>
+            {
+                focusCalls.Add(h);
+                return true;
+            },
             Sleep = _ => { },
         };
 
-        core.Toggle();               // session A on Target
+        core.Toggle(); // session A on Target
         core.StopDictationNative();
         foreground = other;
-        core.Toggle();               // session B on other, before any tick
+        core.Toggle(); // session B on other, before any tick
         core.CheckDictationFocus();
 
         Assert.True(core.IsDictating);
@@ -896,7 +1000,11 @@ public class ToggleCoreTests
         var visible = new Queue<bool>([true, false]); // positive evidence on tick 1 only
         core.IsVoiceUiVisible = () => visible.Dequeue();
         core.SendEscape = () => escapes++;
-        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.RestoreFocus = h =>
+        {
+            focusCalls.Add(h);
+            return true;
+        };
         core.Sleep = sleeps.Add;
         var fg = new Queue<nint>([Target, Target, 0, Target]); // start guard, tick-1 focus-watch read, corrective retry check (candidate raised), tick-2 focus-watch read
         core.GetForeground = () => fg.Dequeue();

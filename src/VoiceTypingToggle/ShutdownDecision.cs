@@ -1,4 +1,4 @@
-internal enum ShutdownKind
+﻿internal enum ShutdownKind
 {
     UserExit,
     FatalTrayLoss,
@@ -25,7 +25,11 @@ internal sealed class ShutdownDecision
 
     public ShutdownKind? Kind { get; private set; }
 
-    public ShutdownAction Begin(ShutdownKind requestedKind, bool isDictating, bool stopConfirmPending)
+    public ShutdownAction Begin(
+        ShutdownKind requestedKind,
+        bool isDictating,
+        bool stopConfirmPending
+    )
     {
         if (Kind is { } current)
         {

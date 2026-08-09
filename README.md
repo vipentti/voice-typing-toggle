@@ -58,3 +58,17 @@ records timestamps, state/action markers, window/thread handles, keyboard layout
 handles, and state flags. It never records dictated text, typed content, key
 contents, window titles, or document names. Tracing adds diagnostic overhead and
 should be disabled for normal use by unsetting `VTT_TRACE`.
+
+## Development
+
+Formatting is enforced by CSharpier, driven by the `.editorconfig`. A
+Husky.Net pre-commit hook checks staged C# files and blocks the commit when
+they need formatting; CI runs `dotnet csharpier check .` as the same check at
+repo scope.
+
+After cloning, restore the pinned tools and install the git hooks:
+
+```powershell
+dotnet tool restore
+dotnet husky install
+```

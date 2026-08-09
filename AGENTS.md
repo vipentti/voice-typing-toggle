@@ -90,6 +90,22 @@ dotnet build VoiceTypingToggle.slnx
 dotnet test VoiceTypingToggle.slnx
 ```
 
+Formatting is enforced by CSharpier. The pre-commit hook checks staged
+files and blocks the commit when they are not formatted, but run the
+formatter manually while working on code so changes land formatted
+regardless of how they are committed:
+
+```powershell
+dotnet tool restore
+dotnet csharpier format .
+```
+
+After formatting, verify no remaining drift before finishing code changes:
+
+```powershell
+dotnet csharpier check .
+```
+
 For publishing or deployment changes, also run:
 
 ```powershell

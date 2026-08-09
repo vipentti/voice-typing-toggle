@@ -3,7 +3,15 @@ using static NativeMethods;
 // Voice Typing UI watchdog: win-event callback, window matching, tracing.
 sealed partial class Program
 {
-    static void OnVoiceUiEvent(nint hWinEventHook, uint eventType, nint hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    static void OnVoiceUiEvent(
+        nint hWinEventHook,
+        uint eventType,
+        nint hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime
+    )
     {
         if (hwnd == 0 || idObject != ObjidWindow || !IsVoiceUiWindow(hwnd))
         {
@@ -25,8 +33,16 @@ sealed partial class Program
         nint foreground = GetForegroundWindow();
         uint foregroundTid = foreground != 0 ? GetWindowThreadProcessId(foreground, out _) : 0;
         nint foregroundHkl = foregroundTid != 0 ? GetKeyboardLayout(foregroundTid) : 0;
-        Trace.Write(GetTickCount64(), eventName, foreground, foregroundTid, foregroundHkl,
-            Core.IsDictating, Core.WaitingForBar, Core.StopConfirmPending);
+        Trace.Write(
+            GetTickCount64(),
+            eventName,
+            foreground,
+            foregroundTid,
+            foregroundHkl,
+            Core.IsDictating,
+            Core.WaitingForBar,
+            Core.StopConfirmPending
+        );
     }
 
     // stop-flash: the bar's launch confirmation also polls for this window.
@@ -53,15 +69,18 @@ sealed partial class Program
     static bool IsVoiceUiVisible()
     {
         bool found = false;
-        _ = EnumWindows((h, _) =>
-        {
-            if (IsVoiceUiWindow(h) && IsWindowVisible(h))
+        _ = EnumWindows(
+            (h, _) =>
             {
-                found = true;
-                return false; // stop enumerating
-            }
-            return true;
-        }, 0);
+                if (IsVoiceUiWindow(h) && IsWindowVisible(h))
+                {
+                    found = true;
+                    return false; // stop enumerating
+                }
+                return true;
+            },
+            0
+        );
         return found;
     }
 

@@ -13,7 +13,10 @@ sealed partial class Program
         uint self = GetCurrentThreadId();
         bool attached = false;
         nint current = GetForegroundWindow();
-        uint attachTo = current != 0 ? GetWindowThreadProcessId(current, out _) : GetWindowThreadProcessId(hwnd, out _);
+        uint attachTo =
+            current != 0
+                ? GetWindowThreadProcessId(current, out _)
+                : GetWindowThreadProcessId(hwnd, out _);
         if (attachTo != 0 && attachTo != self)
         {
             attached = AttachThreadInput(self, attachTo, true);
@@ -36,8 +39,14 @@ sealed partial class Program
 
     static bool RequestLayout(nint hwnd, nint hkl)
     {
-        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
-        TraceAction(requested ? $"layout-request-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-failed-0x{hwnd:X}-0x{hkl:X}");
+        bool requested =
+            SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _)
+            != 0;
+        TraceAction(
+            requested
+                ? $"layout-request-ok-0x{hwnd:X}-0x{hkl:X}"
+                : $"layout-request-failed-0x{hwnd:X}-0x{hkl:X}"
+        );
         return requested;
     }
 
@@ -46,8 +55,14 @@ sealed partial class Program
     // 1000 ms seam above remains the only request path for Ctrl+Alt+H.
     static bool RequestLayoutHookSafe(nint hwnd, nint hkl)
     {
-        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 100, out _) != 0;
-        TraceAction(requested ? $"layout-request-hook-safe-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-hook-safe-failed-0x{hwnd:X}-0x{hkl:X}");
+        bool requested =
+            SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 100, out _)
+            != 0;
+        TraceAction(
+            requested
+                ? $"layout-request-hook-safe-ok-0x{hwnd:X}-0x{hkl:X}"
+                : $"layout-request-hook-safe-failed-0x{hwnd:X}-0x{hkl:X}"
+        );
         return requested;
     }
 
@@ -136,8 +151,10 @@ sealed partial class Program
 
     static void SendEscape()
     {
-        if (SendKey(0, 0x01, up: false, useScanCode: true) &&
-            SendKey(0, 0x01, up: true, useScanCode: true))
+        if (
+            SendKey(0, 0x01, up: false, useScanCode: true)
+            && SendKey(0, 0x01, up: true, useScanCode: true)
+        )
         {
             TraceAction("escape-sent");
         }
@@ -152,7 +169,10 @@ sealed partial class Program
     // restores unconditionally after its settle regardless of this result.
     static bool SendKey(ushort vk, ushort scan, bool up, bool useScanCode, bool extended = false)
     {
-        uint flags = (up ? KeyeventfKeyUp : 0) | (extended ? KeyeventfExtendedKey : 0) | (useScanCode ? KeyeventfScanCode : 0);
+        uint flags =
+            (up ? KeyeventfKeyUp : 0)
+            | (extended ? KeyeventfExtendedKey : 0)
+            | (useScanCode ? KeyeventfScanCode : 0);
         var input = new INPUT
         {
             type = InputKeyboard,

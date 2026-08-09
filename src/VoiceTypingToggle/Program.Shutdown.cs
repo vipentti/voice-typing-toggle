@@ -6,8 +6,14 @@ sealed partial class Program
 {
     static void RequestOrderlyShutdown(ShutdownKind reason)
     {
-        ShutdownAction initialAction = ShutdownPolicy.Begin(reason, Core.IsDictating, Core.StopConfirmPending);
-        TraceAction(reason == ShutdownKind.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
+        ShutdownAction initialAction = ShutdownPolicy.Begin(
+            reason,
+            Core.IsDictating,
+            Core.StopConfirmPending
+        );
+        TraceAction(
+            reason == ShutdownKind.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested"
+        );
         if (initialAction == ShutdownAction.Wait && !FocusTimerRunning)
         {
             // Listening may be disabled (focus-watch timer killed). A pending
@@ -33,7 +39,11 @@ sealed partial class Program
         {
             return;
         }
-        ShutdownAction action = ShutdownPolicy.Advance(Core.IsDictating, Core.StopConfirmPending, IsVoiceUiVisible());
+        ShutdownAction action = ShutdownPolicy.Advance(
+            Core.IsDictating,
+            Core.StopConfirmPending,
+            IsVoiceUiVisible()
+        );
         if (action == ShutdownAction.Wait)
         {
             return;
@@ -66,10 +76,20 @@ sealed partial class Program
                 FocusTimerRunning = false;
                 TraceAction("disabled-cancel-timer-killed");
             }
-            MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.", "Voice Typing Toggle", 0x10);
+            MessageBoxW(
+                AppWindow,
+                "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.",
+                "Voice Typing Toggle",
+                0x10
+            );
             return;
         }
-        MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed after the notification icon was lost. It may require manual dismissal.", "Voice Typing Toggle", 0x10);
+        MessageBoxW(
+            AppWindow,
+            "Voice Typing could not be confirmed closed after the notification icon was lost. It may require manual dismissal.",
+            "Voice Typing Toggle",
+            0x10
+        );
         Core.CorrectPendingStop(); // canonical last-ditch close before teardown
         CompleteShutdown();
     }

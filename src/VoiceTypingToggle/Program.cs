@@ -46,17 +46,18 @@ sealed partial class Program
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
     private static bool WinHHoldArmed; // injected right-Win is down: shutdown must release it
-    private static bool ListeningEnabled = true;     // tray-gated master: hotkey, hook, and timers run only while true
-    private static bool HotkeyEnabled;               // tray-gated: Ctrl+Alt+H toggle hotkey (off by default, session-only)
+    private static bool ListeningEnabled = true; // tray-gated master: hotkey, hook, and timers run only while true
+    private static bool HotkeyEnabled; // tray-gated: Ctrl+Alt+H toggle hotkey (off by default, session-only)
     private static bool InterceptWinHEnabled = true; // tray-gated: physical Win+H race interception (intent; the hook may fail to install)
-    private static bool EnterCloseEnabled = true;  // tray-gated: close dictation on physical Enter while dictating
-    private static bool SpaceCloseEnabled = true;  // tray-gated: close dictation on physical Space while dictating
+    private static bool EnterCloseEnabled = true; // tray-gated: close dictation on physical Enter while dictating
+    private static bool SpaceCloseEnabled = true; // tray-gated: close dictation on physical Space while dictating
     private static readonly ShutdownDecision ShutdownPolicy = new();
 
     static int Main()
     {
         Trace = DiagnosticTrace.CreateFromEnvironment();
-        bool restoreFocusedLayout = Environment.GetEnvironmentVariable("VTT_RESTORE_FOCUSED_LAYOUT") == "1";
+        bool restoreFocusedLayout =
+            Environment.GetEnvironmentVariable("VTT_RESTORE_FOCUSED_LAYOUT") == "1";
 
         nint[] layouts = new nint[32];
         int count = GetKeyboardLayoutList(layouts.Length, layouts);
@@ -70,11 +71,22 @@ sealed partial class Program
             uint tid = GetWindowThreadProcessId(foreground, out _);
             currentHkl = tid != 0 ? GetKeyboardLayout(tid) : 0;
         }
-        nint englishLayout = count > 0 ? ToggleCore.SelectEnglishLayout(layouts, count, currentHkl != 0 ? (uint)currentHkl & 0xFFFF0000 : 0) : 0;
+        nint englishLayout =
+            count > 0
+                ? ToggleCore.SelectEnglishLayout(
+                    layouts,
+                    count,
+                    currentHkl != 0 ? (uint)currentHkl & 0xFFFF0000 : 0
+                )
+                : 0;
         if (englishLayout == 0)
         {
-            MessageBoxW(0, "No English keyboard layout is installed. Voice Typing Toggle cannot start.",
-                "Voice Typing Toggle", 0x10 /* MB_ICONERROR */);
+            MessageBoxW(
+                0,
+                "No English keyboard layout is installed. Voice Typing Toggle cannot start.",
+                "Voice Typing Toggle",
+                0x10 /* MB_ICONERROR */
+            );
             return 1;
         }
 
@@ -93,7 +105,9 @@ sealed partial class Program
             RestoreFocusedLayoutOnFocusLoss = restoreFocusedLayout,
             Trace = TraceAction,
         };
-        TraceAction(restoreFocusedLayout ? "startup-focused-restore-on" : "startup-focused-restore-off");
+        TraceAction(
+            restoreFocusedLayout ? "startup-focused-restore-on" : "startup-focused-restore-off"
+        );
         Trace.Flush();
 
         nint hInstance = GetModuleHandleW(null);
@@ -105,21 +119,52 @@ sealed partial class Program
         };
         if (RegisterClassW(ref wndClass) == 0)
         {
-            MessageBoxW(0, $"RegisterClass failed (Win32 {Marshal.GetLastPInvokeError()}).", "Voice Typing Toggle", 0x10);
+            MessageBoxW(
+                0,
+                $"RegisterClass failed (Win32 {Marshal.GetLastPInvokeError()}).",
+                "Voice Typing Toggle",
+                0x10
+            );
             return 1;
         }
 
-        AppWindow = CreateWindowExW(WsExToolWindow | WsExNoActivate, wndClass.lpszClassName, null, 0, 0, 0, 0, 0, 0, 0, hInstance, 0);
+        AppWindow = CreateWindowExW(
+            WsExToolWindow | WsExNoActivate,
+            wndClass.lpszClassName,
+            null,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            hInstance,
+            0
+        );
         if (AppWindow == 0)
         {
-            MessageBoxW(0, $"CreateWindow failed (Win32 {Marshal.GetLastPInvokeError()}).", "Voice Typing Toggle", 0x10);
+            MessageBoxW(
+                0,
+                $"CreateWindow failed (Win32 {Marshal.GetLastPInvokeError()}).",
+                "Voice Typing Toggle",
+                0x10
+            );
             return 1;
         }
 
         // The Ctrl+Alt+H hotkey is tray-gated and off by default (session-only):
         // it is registered only when "Enable Ctrl+Alt+H" is checked, so an
         // in-use combination is never a fatal startup condition.
-        VoiceUiHook = SetWinEventHook(EventObjectShow, EventObjectShow, 0, WinEventCallback, 0, 0, 0 /* WINEVENT_OUTOFCONTEXT */); // stop-flash watchdog
+        VoiceUiHook = SetWinEventHook(
+            EventObjectShow,
+            EventObjectShow,
+            0,
+            WinEventCallback,
+            0,
+            0,
+            0 /* WINEVENT_OUTOFCONTEXT */
+        ); // stop-flash watchdog
         FocusTimerRunning = SetTimer(AppWindow, TimerId, FocusWatchIntervalMs, 0) != 0;
         // Physical Win+H observation (race interception): installed by default
         // (opt-out); the tray checkbox toggles it live (T4). Failure is
@@ -129,7 +174,12 @@ sealed partial class Program
         AppIcon = LoadIconW(hInstance, ApplicationIconResourceId);
         if (AppIcon == 0)
         {
-            MessageBoxW(AppWindow, "Could not load the embedded application icon.", "Voice Typing Toggle", 0x10);
+            MessageBoxW(
+                AppWindow,
+                "Could not load the embedded application icon.",
+                "Voice Typing Toggle",
+                0x10
+            );
             RequestOrderlyShutdown(ShutdownKind.FatalTrayLoss);
             return 1;
         }
@@ -156,5 +206,4 @@ sealed partial class Program
         }
         return 0;
     }
-
 }

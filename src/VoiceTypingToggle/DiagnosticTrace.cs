@@ -1,4 +1,4 @@
-// Permanent opt-in diagnostics. The trace contains state/action metadata only:
+﻿// Permanent opt-in diagnostics. The trace contains state/action metadata only:
 // never window titles, document names, dictated text, typed content, or keys.
 internal sealed class DiagnosticTrace : IDisposable
 {
@@ -17,7 +17,9 @@ internal sealed class DiagnosticTrace : IDisposable
     public static DiagnosticTrace CreateFromEnvironment()
     {
         string? setting = Environment.GetEnvironmentVariable("VTT_TRACE");
-        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string localAppData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData
+        );
         return Create(setting, localAppData);
     }
 
@@ -35,9 +37,16 @@ internal sealed class DiagnosticTrace : IDisposable
             {
                 Directory.CreateDirectory(directory);
             }
-            var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            var stream = new FileStream(
+                path,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.ReadWrite
+            );
             var traceWriter = new StreamWriter(stream) { AutoFlush = false };
-            traceWriter.WriteLine("tick,event,foreground,foregroundTid,foregroundHkl,isDictating,waitingForBar,stopConfirmPending");
+            traceWriter.WriteLine(
+                "tick,event,foreground,foregroundTid,foregroundHkl,isDictating,waitingForBar,stopConfirmPending"
+            );
             traceWriter.Flush();
             return new DiagnosticTrace(traceWriter);
         }
@@ -65,21 +74,31 @@ internal sealed class DiagnosticTrace : IDisposable
         {
             return null;
         }
-        string path = setting == "1"
-            ? Path.Combine(localAppData, DefaultDirectoryName, DefaultFileName)
-            : setting;
+        string path =
+            setting == "1"
+                ? Path.Combine(localAppData, DefaultDirectoryName, DefaultFileName)
+                : setting;
         return Path.GetFullPath(path);
     }
 
-    public void Write(ulong tick, string eventName, nint foreground, uint foregroundTid,
-        nint foregroundHkl, bool isDictating, bool waitingForBar, bool stopConfirmPending)
+    public void Write(
+        ulong tick,
+        string eventName,
+        nint foreground,
+        uint foregroundTid,
+        nint foregroundHkl,
+        bool isDictating,
+        bool waitingForBar,
+        bool stopConfirmPending
+    )
     {
         if (writer is null)
         {
             return;
         }
         string line = FormattableString.Invariant(
-            $"{tick},{eventName},0x{foreground:X},{foregroundTid},0x{foregroundHkl:X},{isDictating},{waitingForBar},{stopConfirmPending}");
+            $"{tick},{eventName},0x{foreground:X},{foregroundTid},0x{foregroundHkl:X},{isDictating},{waitingForBar},{stopConfirmPending}"
+        );
         lock (sync)
         {
             writer.WriteLine(line);

@@ -13,7 +13,13 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: |
+            **/*.csproj
+            .config/dotnet-tools.json
+      - name: Restore tools
+        run: dotnet tool restore
+      - name: Check CSharpier formatting
+        run: dotnet csharpier check .
       - name: Build
         run: dotnet build VoiceTypingToggle.slnx
       - name: Test

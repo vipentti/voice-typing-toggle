@@ -1,23 +1,23 @@
-// Pure toggle state machine, free of Win32 calls: every system access goes
+﻿// Pure toggle state machine, free of Win32 calls: every system access goes
 // through an injected seam so tests can drive transitions with fakes. Program
 // wires the real P/Invokes; the tests wire fakes.
 internal sealed class ToggleCore
 {
-    const int PollIntervalMs = 10;   // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
+    const int PollIntervalMs = 10; // T5: measured switches complete in <1 ms; 10 ms keeps polling cheap
     const int SwitchTimeoutMs = 100; // T5: 100x margin over observed <1 ms switches; unhonored apps never switch
     const uint LangEnUs = 0x0409;
     const uint KlidMask = 0xFFFF0000;
-    const int EscapeRetryMs = 30;          // stop-flash: Escape settle; restore lands ~+31-47 ms (tuned; 20/15/10 reopen the bar), see .tmp/stop-flash-findings.md
+    const int EscapeRetryMs = 30; // stop-flash: Escape settle; restore lands ~+31-47 ms (tuned; 20/15/10 reopen the bar), see .tmp/stop-flash-findings.md
     const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
     const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
-    const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
-    const int NativeStopRestoreTicks = 2;    // two timer callbacks, 250-500 ms: the physical close event must reach Windows before focus/layout restore
-    const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
+    const int StopConfirmTimeoutTicks = 10; // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
+    const int NativeStopRestoreTicks = 2; // two timer callbacks, 250-500 ms: the physical close event must reach Windows before focus/layout restore
+    const int BarWaitTimeoutTicks = 8; // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
     public bool IsDictating { get; private set; }
     public bool StopConfirmPending { get; private set; } // watchdog: bar may have reopened after stop; corrective pass armed
-    public bool WaitingForBar { get; private set; }       // launch not yet confirmed: the bar has not shown after Win+H
+    public bool WaitingForBar { get; private set; } // launch not yet confirmed: the bar has not shown after Win+H
     public bool RestoreFocusedLayoutOnFocusLoss { get; set; }
     public nint SavedLayout { get; private set; }
     public nint SavedWindow { get; private set; }
@@ -88,8 +88,13 @@ internal sealed class ToggleCore
         nint current = GetLayout(tid);
 
         // Fail closed: only start voice typing after the English layout is confirmed active.
-        if (!IsEnglishLayout(current) &&
-            (!RequestLayout(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
+        if (
+            !IsEnglishLayout(current)
+            && (
+                !RequestLayout(hwnd, EnglishLayout)
+                || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)
+            )
+        )
         {
             return; // stay Idle
         }
@@ -97,7 +102,7 @@ internal sealed class ToggleCore
         SavedWindow = hwnd;
         IsDictating = true;
         StopConfirmPending = false; // a new dictation supersedes any pending stop confirmation
-        WaitingForBar = true;       // confirm the bar appeared via the 250 ms timer; never block the message loop
+        WaitingForBar = true; // confirm the bar appeared via the 250 ms timer; never block the message loop
         barWaitTicksLeft = BarWaitTimeoutTicks;
         Trace("start-armed");
         SendWinH();
@@ -138,8 +143,13 @@ internal sealed class ToggleCore
         }
         uint tid = GetThreadId(hwnd);
         nint current = GetLayout(tid);
-        if (!IsEnglishLayout(current) &&
-            (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
+        if (
+            !IsEnglishLayout(current)
+            && (
+                !RequestLayoutBounded(hwnd, EnglishLayout)
+                || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)
+            )
+        )
         {
             Trace("race-layout-failed");
             return; // stay Idle; no injected Win+H; native press proceeds
@@ -329,7 +339,8 @@ internal sealed class ToggleCore
             // Positive evidence only: the transient popup being absent cannot
             // prove closure. A corrective pass runs only when the popup is
             // observed visible while the stop confirmation is pending.
-            bool corrected = StopConfirmPending && !IsDictating && IsVoiceUiVisible() && RunWatchdogCorrection();
+            bool corrected =
+                StopConfirmPending && !IsDictating && IsVoiceUiVisible() && RunWatchdogCorrection();
             if (--nativeStopRestoreTicksLeft <= 0)
             {
                 nativeStopRestorePending = false;
