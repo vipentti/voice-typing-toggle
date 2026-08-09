@@ -8,8 +8,10 @@ turns off the whole listening part: hotkey, keyboard hook, and timers. A new
 "Enable Ctrl+Alt+H" checkbox (unchecked by default) gates the Ctrl+Alt+H
 toggle hotkey, which is no longer registered at startup. No persistence: every
 start begins from the defaults. Disabling either control while dictating first
-aborts the session exactly like Escape (close bar, restore saved layout and
-focus), then applies the change.
+ends the active session (bar closed, saved layout restored), then applies the
+change. In the normal tray-menu flow the existing focus-loss self-heal does
+the ending; the defensive abort helper runs the Escape-first stop, which also
+restores focus to the saved window.
 
 ## Scope
 
@@ -73,9 +75,17 @@ focus), then applies the change.
   that cannot expire without the focus-watch timer remains safe (corrections
   bounded by `StopConfirmMaxCorrections`, triggered only by SHOW events) and
   expires once listening is re-enabled.
-- Shutdown is unchanged in shape: `CompleteShutdown` already guards each
-  teardown by its `!= 0` state, which the disabled paths leave consistent.
-  Exit from the disabled state works normally.
+- Shutdown: `CompleteShutdown` keeps its existing guarded teardown. A user
+  exit that begins while listening is disabled with a stop confirmation still
+  pending must not stall: `ShutdownDecision.Begin` returns Wait for a pending
+  confirmation, and that drain advances only from the focus-watch timer
+  (watchdog expiry in `CheckDictationFocus`, `OnVoiceUiShown` corrective
+  passes, `ContinueShutdownIfNeeded`). `RequestOrderlyShutdown` therefore
+  re-arms the focus-watch timer when the initial action is Wait and the timer
+  is not running (the disabled state), so the existing drain semantics run
+  unchanged; `CompleteShutdown` kills the re-armed timer exactly as it does in
+  the enabled state. If the re-arm fails, the drain falls back to the same
+  timer-dependent exposure the enabled state already has.
 - `ToggleCore` is untouched. No new unit tests: the tray menu, hotkey
   registration, and Program-level state are manual-verification territory per
   AGENTS.md. Existing `ToggleCoreTests` must keep passing.
@@ -111,6 +121,13 @@ shows unchecked, matching the actual registration state). A direct
 "Enable Ctrl+Alt+H" registration failure instead ends with `ListeningEnabled`
 unchanged (true) and `HotkeyEnabled` false.
 
+Shutdown drain while disabled: `RequestOrderlyShutdown` re-arms the
+focus-watch timer when `ShutdownPolicy.Begin` returns Wait and the timer is
+not running, so a pending stop confirmation drains through the existing
+`CheckDictationFocus` watchdog expiry and `ContinueShutdownIfNeeded` even
+though the master disable killed the timer. `ContinueShutdownIfNeeded`,
+`ShutdownDecision`, and `CompleteShutdown` are unchanged.
+
 Menu layout: title, status line ("Status: Idle", "Status: Dictating", or
 "Status: Disabled"), the hotkey line, separator, "Enable listening", "Enable
 Ctrl+Alt+H", "Intercept Win+H", "Close dictation on Enter", "Close dictation
@@ -135,10 +152,12 @@ them; their stored intent values still drive the restore on re-enable.
   like a normal stop.
 - Unchecking "Enable listening" while Dictating ends the session first (the
   tray-menu heal, or the abort helper's Escape-first stop when the heal did
-  not run), restoring the saved layout and focus and leaving the core Idle,
-  then unregisters the hotkey and uninstalls the hook; the tray icon and menu
-  stay available, status reads "Disabled", and no keyboard input is observed
-  by the application (Ctrl+Alt+H and physical Win+H both behave natively).
+  not run), restoring the saved layout and leaving the core Idle (the
+  tray-menu heal does not steal focus back; only the abort helper's
+  Escape-first stop restores focus to the saved window), then unregisters the
+  hotkey and uninstalls the hook; the tray icon and menu stay available,
+  status reads "Disabled", and no keyboard input is observed by the
+  application (Ctrl+Alt+H and physical Win+H both behave natively).
 - While listening is disabled, all four sub-toggle items are grayed and
   unselectable, "Exit" still works, and re-checking "Enable listening"
   restores exactly the per-checkbox state from before the disable (including
@@ -151,6 +170,11 @@ them; their stored intent values still drive the restore on re-enable.
   ends with `ListeningEnabled` false and `HotkeyEnabled` false: the
   just-applied hook and timer are rolled back and the application stays
   disabled (fail-closed, all-or-nothing).
+- Exit while listening is disabled completes normally: with no pending stop
+  confirmation the shutdown completes immediately, and with a pending
+  confirmation (stop, then disable before watchdog expiry, then Exit) the
+  re-armed focus-watch timer drains the watchdog and shutdown completes or
+  cancels under the existing semantics instead of stalling.
 - A disable requested while a Win+H-hold gesture is armed never leaves an
   injected Win key held and never sends a stray Escape into an unrelated
   foreground window; the session ends like a normal stop.
@@ -175,18 +199,22 @@ them; their stored intent values still drive the restore on re-enable.
   while Idle, unchecking it while Idle, and the dictating cases from the
   state that actually exists when menu commands run (opening the tray menu
   while Dictating ends the session via the focus-loss self-heal: bar closes,
-  layout and focus restored, core Idle, status line shows Idle; the toggle is
-  then selected while Idle), master disable while Idle and the same
-  menu-open-during-dictation flow (session ends and restores first,
-  everything inert afterwards, tray still usable), re-enable restoring
-  per-checkbox state, grayed sub-toggles being unselectable, hotkey-in-use
-  failure at direct enable and at master re-enable (message box; direct
-  failure leaves listening enabled with the item unchecked, re-enable
-  failure leaves the application disabled with both flags false), Enter and
-  Space close behavior and stop-flash watchdog behavior with listening
-  active after a disable/re-enable cycle, disable during an in-flight Win+H
-  hold (no stuck Win, no stray Escape), Exit while disabled, repeated toggle
-  cycles, focus changes, and shutdown restoration. Session-only reset: change
+  saved layout restored with no focus steal-back, core Idle, status line
+  shows Idle; the toggle is then selected while Idle), master disable while
+  Idle and the same menu-open-during-dictation flow (session ends and
+  restores first, everything inert afterwards, tray still usable), re-enable
+  restoring per-checkbox state, grayed sub-toggles being unselectable,
+  hotkey-in-use failure at direct enable and at master re-enable (message
+  box; direct failure leaves listening enabled with the item unchecked,
+  re-enable failure leaves the application disabled with both flags false),
+  Exit while disabled with no pending confirmation (immediate completion)
+  and with a pending stop confirmation (stop dictation, disable listening
+  before the watchdog expires, select Exit: the re-armed focus-watch timer
+  drains the watchdog and shutdown completes or cancels under the existing
+  semantics, never stalls), Enter and Space close behavior and stop-flash
+  watchdog behavior with listening active after a disable/re-enable cycle,
+  disable during an in-flight Win+H hold (no stuck Win, no stray Escape),
+  repeated toggle cycles, focus changes, and shutdown restoration. Session-only reset: change
   checkbox intents (for example enable "Enable Ctrl+Alt+H" and disable
   listening), restart the application, and verify every checkbox returns to
   its documented default (hotkey unchecked, listening and Intercept Win+H
@@ -209,3 +237,6 @@ them; their stored intent values still drive the restore on re-enable.
 - All-or-nothing re-enable means one unavailable hotkey keeps listening
   disabled; the message box explains why and the user can leave the hotkey
   unchecked.
+- Disabled-state shutdown drain depends on the re-armed focus-watch timer; a
+  `SetTimer` failure at that point leaves the same timer-dependent exposure
+  the enabled state already has, no additional handling is added.
