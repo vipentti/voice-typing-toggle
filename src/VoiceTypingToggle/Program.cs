@@ -380,6 +380,7 @@ sealed partial class Program
             GetThreadId = h => GetWindowThreadProcessId(h, out _),
             GetLayout = GetKeyboardLayout,
             RequestLayout = RequestLayout,
+            RequestLayoutBounded = RequestLayoutHookSafe,
             SendWinH = SendWinH,
             SendEscape = SendEscape,
             RestoreFocus = RestoreFocus,
@@ -797,6 +798,16 @@ sealed partial class Program
     {
         bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 1000, out _) != 0;
         TraceAction(requested ? $"layout-request-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-failed-0x{hwnd:X}-0x{hkl:X}");
+        return requested;
+    }
+
+    // Hook-callback budget: worst case ~100 ms here plus ~100 ms WaitForLayout,
+    // so the Idle race-start callback stays within its ~200 ms bound. The
+    // 1000 ms seam above remains the only request path for Ctrl+Alt+H.
+    static bool RequestLayoutHookSafe(nint hwnd, nint hkl)
+    {
+        bool requested = SendMessageTimeout(hwnd, WmInputLangChangeRequest, 0, hkl, SmtoAbortIfHung, 100, out _) != 0;
+        TraceAction(requested ? $"layout-request-hook-safe-ok-0x{hwnd:X}-0x{hkl:X}" : $"layout-request-hook-safe-failed-0x{hwnd:X}-0x{hkl:X}");
         return requested;
     }
 

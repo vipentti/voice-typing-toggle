@@ -10,6 +10,7 @@ internal sealed class ToggleCore
     const int StopConfirmEscapeRetryMs = 100; // stop-flash watchdog: corrective passes use the proven-safe settle — reliability over speed, the flash already happened
     const int StopConfirmMaxCorrections = 2; // stop-flash watchdog: bounded corrective passes per stop
     const int StopConfirmTimeoutTicks = 10;  // ~2.5 s at the 250 ms focus-watch cadence (covers the slow bar launch)
+    const int NativeStopRestoreTicks = 1;    // ~250 ms at the focus-watch cadence: settle for the native close before restoring
     const int BarWaitTimeoutTicks = 8;       // ~2 s at the 250 ms cadence: stop polling for the transient popup
 
     public nint EnglishLayout { get; }
@@ -24,6 +25,7 @@ internal sealed class ToggleCore
     public Func<nint, uint> GetThreadId { get; set; } = static _ => 0;
     public Func<uint, nint> GetLayout { get; set; } = static _ => 0;
     public Func<nint, nint, bool> RequestLayout { get; set; } = static (_, _) => false;
+    public Func<nint, nint, bool> RequestLayoutBounded { get; set; } = static (_, _) => false; // race-start only: hook-callback budget, ~100 ms request
     public Action SendWinH { get; set; } = static () => { };
     public Action SendEscape { get; set; } = static () => { };
     public Func<nint, bool> RestoreFocus { get; set; } = static _ => false;
@@ -41,6 +43,8 @@ internal sealed class ToggleCore
     int stopConfirmCorrections;
     int stopConfirmTicksLeft;
     int barWaitTicksLeft;
+    bool nativeStopRestorePending;
+    int nativeStopRestoreTicksLeft;
 
     public ToggleCore(nint englishLayout) => EnglishLayout = englishLayout;
 
@@ -102,6 +106,63 @@ internal sealed class ToggleCore
         Trace("stop-idle");
     }
 
+    // Physical Win+H race start: switch the foreground thread to English but
+    // do NOT inject Win+H; the native handler opens the bar from the physical
+    // press. Uses the bounded request seam so the hook callback stays within
+    // its ~200 ms worst-case budget. Fail-open: on failure the core stays Idle
+    // with no saved session and the physical Win+H proceeds natively.
+    public void StartDictationRace(nint hwnd)
+    {
+        if (!CompletePendingRestore(hwnd))
+        {
+            return;
+        }
+        uint tid = GetThreadId(hwnd);
+        nint current = GetLayout(tid);
+        if (current != EnglishLayout &&
+            (!RequestLayoutBounded(hwnd, EnglishLayout) || !WaitForLayout(tid, EnglishLayout, SwitchTimeoutMs)))
+        {
+            Trace("race-layout-failed");
+            return; // stay Idle; no injected Win+H; native press proceeds
+        }
+        SavedLayout = current;
+        SavedWindow = hwnd;
+        IsDictating = true;
+        StopConfirmPending = false;
+        WaitingForBar = true;
+        barWaitTicksLeft = BarWaitTimeoutTicks;
+        Trace("race-start-armed");
+    }
+
+    // Physical Win+H stop: the native handler closes the bar from the physical
+    // press, which the hook already chained. No Escape before that chained
+    // event (it would close the bar and let the chained press reopen it), and
+    // no synchronous restore: the close happens after the callback returns, so
+    // restoration is deferred to the message-loop timer. Escape stays reserved
+    // for positive-evidence corrective passes.
+    public void StopDictationNative()
+    {
+        Trace("native-stop-begin");
+        ArmStopConfirm();
+        WaitingForBar = false;
+        nativeStopRestorePending = true;
+        nativeStopRestoreTicksLeft = NativeStopRestoreTicks;
+        SavedLayout = 0;
+        SavedWindow = 0;
+        IsDictating = false;
+        Trace("native-stop-armed");
+    }
+
+    void CompleteNativeStopRestore()
+    {
+        Trace("native-stop-restore");
+        if (stopConfirmWindow != 0)
+        {
+            _ = RestoreFocus(stopConfirmWindow);
+        }
+        RestoreLayout(stopConfirmWindow, stopConfirmLayout);
+    }
+
     void ArmStopConfirm()
     {
         StopConfirmPending = true;
@@ -147,15 +208,25 @@ internal sealed class ToggleCore
         {
             return;
         }
+        _ = RunWatchdogCorrection();
+    }
+
+    // Positive-evidence corrective pass, bounded per stop: shared by the SHOW
+    // watchdog (OnVoiceUiShown) and the native-stop timer check. Returns true
+    // when a corrective pass actually ran (the caller may then skip its own
+    // restore: the pass already restored via the stopConfirm* snapshot).
+    bool RunWatchdogCorrection()
+    {
         if (stopConfirmCorrections-- <= 0)
         {
             StopConfirmPending = false;
             Trace("watchdog-correction-limit");
-            return;
+            return false;
         }
         Trace("watchdog-corrective-begin");
         RunStopSequence(corrective: true); // safe settle: a racy correction would just reopen the bar again
         stopConfirmTicksLeft = StopConfirmTimeoutTicks; // fresh expiry window for any further reopen
+        return true;
     }
 
     // Shutdown drain: the coordinator re-runs the canonical saved-stop
@@ -206,6 +277,21 @@ internal sealed class ToggleCore
         {
             StopConfirmPending = false;
             Trace("watchdog-expired");
+        }
+        if (nativeStopRestorePending)
+        {
+            // Positive evidence only: the transient popup being absent cannot
+            // prove closure. A corrective pass runs only when the popup is
+            // observed visible while the stop confirmation is pending.
+            bool corrected = StopConfirmPending && !IsDictating && IsVoiceUiVisible() && RunWatchdogCorrection();
+            if (--nativeStopRestoreTicksLeft <= 0)
+            {
+                nativeStopRestorePending = false;
+                if (!corrected)
+                {
+                    CompleteNativeStopRestore(); // the corrective pass already restored via the snapshot
+                }
+            }
         }
         if (!healedFocusLoss && !IsDictating && pendingRestoreWindow != 0)
         {

@@ -166,6 +166,7 @@ public class ToggleCoreTests
             GetThreadId = _ => 7,
             GetLayout = _ => layout,
             RequestLayout = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
+            RequestLayoutBounded = (h, hkl) => { requests.Add((h, hkl)); layout = hkl; return true; },
             SendWinH = () => { },
             SendEscape = () => { },
             RestoreFocus = _ => true,
@@ -543,6 +544,141 @@ public class ToggleCoreTests
         Assert.Equal(EnGb, layouts[7]);
         Assert.Equal(EnGb, layouts[8]);
         Assert.Equal([(Target, EnUs), (Target, EnGb), (other, EnGb)], requests);
+    }
+
+    [Fact]
+    public void RaceStartSwitchesViaBoundedSeamAndSkipsWinH()
+    {
+        var (core, requests) = NewCore();
+        core.RequestLayout = (_, _) => throw new InvalidOperationException("race-start must use the bounded seam");
+        int winH = 0;
+        core.SendWinH = () => winH++;
+
+        core.StartDictationRace(Target);
+
+        Assert.True(core.IsDictating);
+        Assert.Equal(Target, core.SavedWindow);
+        Assert.Equal(EnGb, core.SavedLayout); // the layout actually saved, pre-switch
+        Assert.Equal(0, winH); // no injected Win+H: the native press opens the bar
+        Assert.Equal([(Target, EnUs)], requests); // switched via the bounded seam
+    }
+
+    [Fact]
+    public void RaceStartLayoutFailureStaysIdleWithoutWinHOrSession()
+    {
+        var (core, _) = NewCore();
+        core.RequestLayoutBounded = (_, _) => false;
+        int winH = 0;
+        core.SendWinH = () => winH++;
+
+        core.StartDictationRace(Target);
+
+        Assert.False(core.IsDictating);
+        Assert.Equal(0, core.SavedLayout);
+        Assert.Equal(0, core.SavedWindow);
+        Assert.Equal(0, winH);
+    }
+
+    [Fact]
+    public void RaceStartSkipsRequestWhenEnglishAlreadyActive()
+    {
+        var (core, requests) = NewCore();
+        core.GetLayout = _ => EnUs;
+
+        core.StartDictationRace(Target);
+
+        Assert.True(core.IsDictating);
+        Assert.Equal(Target, core.SavedWindow);
+        Assert.Equal(EnUs, core.SavedLayout);
+        Assert.Empty(requests);
+    }
+
+    [Fact]
+    public void NativeStopArmsWatchdogWithoutEscapeAndDefersRestore()
+    {
+        var (core, requests) = NewCore();
+        int escapes = 0;
+        var focusCalls = new List<nint>();
+        core.SendEscape = () => escapes++;
+        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+
+        core.Toggle(); // start (injected path)
+        core.StopDictationNative();
+
+        Assert.False(core.IsDictating);
+        Assert.True(core.StopConfirmPending);
+        Assert.Equal(0, escapes); // no Escape before the chained physical event
+        Assert.Empty(focusCalls); // restoration deferred, not synchronous
+        Assert.Equal([(Target, EnUs)], requests);
+
+        core.CheckDictationFocus(); // deferred restore after the native-close settle
+
+        Assert.Equal([Target], focusCalls);
+        Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // layout restored via the snapshot
+        Assert.False(core.IsDictating);
+    }
+
+    [Fact]
+    public void NativeStopCorrectsWhenPopupVisibleWhilePending()
+    {
+        var (core, requests) = NewCore();
+        int escapes = 0;
+        var focusCalls = new List<nint>();
+        var sleeps = new List<int>();
+        core.IsVoiceUiVisible = () => true; // positive evidence: the bar is still there
+        core.SendEscape = () => escapes++;
+        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.Sleep = sleeps.Add;
+        var fg = new Queue<nint>([Target, Target, 0]); // start guard, focus-watch read, corrective retry check (candidate raised)
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start
+        core.StopDictationNative();
+        core.CheckDictationFocus(); // popup visible -> bounded corrective pass
+
+        Assert.Equal(1, escapes); // corrective Escape only (retry check saw the candidate)
+        Assert.Equal([100], sleeps); // corrective passes use the safe settle
+        Assert.Equal([Target], focusCalls);
+        Assert.Equal([(Target, EnUs), (Target, EnGb)], requests);
+        Assert.True(core.StopConfirmPending); // still armed, ticks reset
+    }
+
+    [Fact]
+    public void NativeStopAbsenceIsInconclusiveAndExpiresWithoutCorrection()
+    {
+        var (core, _) = NewCore();
+        int escapes = 0;
+        core.SendEscape = () => escapes++;
+
+        core.Toggle(); // start
+        core.StopDictationNative();
+        for (int i = 0; i < 11; i++)
+        {
+            core.CheckDictationFocus(); // popup never observed: no correction, deferred restore runs
+        }
+
+        Assert.Equal(0, escapes); // absence is never treated as positive evidence
+        Assert.False(core.StopConfirmPending); // expired via the existing watchdog semantics
+        Assert.False(core.IsDictating);
+    }
+
+    [Fact]
+    public void NativeStopShowEventRunsBoundedCorrection()
+    {
+        var (core, _) = NewCore();
+        int escapes = 0;
+        core.SendEscape = () => escapes++;
+        var fg = new Queue<nint>([Target, 0, 0]); // start guard, corrective retry checks
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start
+        core.StopDictationNative();
+        core.OnVoiceUiShown(); // the bar reopened
+        core.OnVoiceUiShown(); // correction 2
+        core.OnVoiceUiShown(); // bound reached: pending cleared, no more corrections
+
+        Assert.Equal(2, escapes);
+        Assert.False(core.StopConfirmPending);
     }
 
     [Fact]
