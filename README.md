@@ -72,3 +72,7 @@ After cloning, restore the pinned tools and install the git hooks:
 dotnet tool restore
 dotnet husky install
 ```
+
+To rebuild the utility from the latest source and restart the running
+instance in one step, run `./update.ps1` (stops the process, publishes
+Native AOT, starts the new binary).
