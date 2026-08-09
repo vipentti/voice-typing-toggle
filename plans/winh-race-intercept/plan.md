@@ -34,14 +34,22 @@ Win+H behavior is preserved).
   observed. Key-up and auto-repeat callbacks therefore never produce additional
   observations, and a fast Idle -> Dictating -> Idle double-toggle from one
   chord is impossible.
-- Start path (Idle): on the single observation per chord, immediately send
-  `WM_INPUTLANGCHANGEREQUEST` for English to the foreground thread and wait for
-  layout confirmation (`ToggleCore.WaitForLayout`, ~100 ms timeout). Do not
-  re-inject Win+H; the native handler opens the bar. If the layout request or
-  confirmation fails, the race-start leaves `ToggleCore` Idle with no saved
-  session and performs no injected Win+H; because the hook does not swallow,
-  the physical Win+H still proceeds natively and the bar opens in the current
-  layout (fail-open, native behavior preserved).
+- Start path (Idle): on the single observation per chord, the callback
+  performs the layout request and confirmation synchronously BEFORE chaining
+  the H event, through a dedicated hook-safe bounded request path. Chaining
+  first would let the native Win+H proceed before English is confirmed and
+  defeat the race; deferring to the message loop loses the same race. The
+  hook-safe path uses `SendMessageTimeout` with `SMTO_ABORTIFHUNG` and a
+  100 ms timeout for the request, then `ToggleCore.WaitForLayout` with its
+  existing ~100 ms cap; worst-case callback duration is therefore bounded at
+  roughly 200 ms (typical <5 ms), after which the H event is chained and the
+  native handler opens the bar with English already confirmed. The existing
+  1000 ms `RequestLayout` behavior is unchanged for the Ctrl+Alt+H path. Do
+  not re-inject Win+H. If the layout request or confirmation fails, the
+  race-start leaves `ToggleCore` Idle with no saved session and performs no
+  injected Win+H; because the hook does not swallow, the physical Win+H still
+  proceeds natively and the bar opens in the current layout (fail-open,
+  native behavior preserved).
 - Stop path (Dictating): on the single observation, the callback chains the
   physical Win+H first and returns immediately. `WH_KEYBOARD_LL` runs before
   the event is delivered onward, so sending Escape before chaining would close
@@ -49,9 +57,17 @@ Win+H behavior is preserved).
   is performed by Windows itself. `ToggleCore` gets a distinct native-stop
   entry that arms the existing stop-confirmation watchdog, marks Idle, and
   defers restoration (saved window and layout) to the message loop after a
-  short settle. Escape is reserved for corrective passes only, if the bar
-  fails to close natively. The Ctrl+Alt+H stop path (Escape-first) is
-  unchanged.
+  short settle. The Ctrl+Alt+H stop path (Escape-first) is unchanged.
+- Native-close confirmation: the existing watchdog cannot by itself detect a
+  native close that simply fails and leaves the bar visible, because
+  `OnVoiceUiShown` corrects only after a new SHOW event and `CheckDictationFocus`
+  expires `StopConfirmPending` without inspecting bar visibility. While a
+  native-stop confirmation is pending, the message-loop timer therefore checks
+  `IsVoiceUiVisible` directly: if the bar is still visible after the settle,
+  it runs a bounded corrective stop (Escape, bounded, same corrective
+  machinery as the shutdown path); if the bar is gone, it completes the stop.
+  `OnVoiceUiShown` is retained for reopen detection. Escape is thus reserved
+  for corrective passes exactly when the native close fails.
 - Ctrl+Alt+H keeps its current behavior exactly: injected `SendWinH` start,
   Escape-first stop, always active regardless of the interception toggle.
 - Focus-loss recovery (`CheckDictationFocus`) is unchanged and applies to
@@ -124,13 +140,19 @@ exception-safe (an exception escaping a native callback terminates a Native AOT
 process), match only vk/modifier state, and never inspect or store typed
 content (guardrail: never log keystrokes). It chains through `CallNextHookEx`
 on all pass-through paths and never returns a nonzero value to swallow input.
-On a Dictating observation it chains first and defers all stop work to the
-message loop; the callback body itself never blocks and never injects input.
+The callback never injects input. Blocking policy differs by state: on an
+Idle observation the callback performs the bounded synchronous layout
+request and confirmation (worst case ~200 ms, typical <5 ms, see Scope) so
+English is confirmed before the H event is chained; on a Dictating
+observation the callback chains first and defers all stop work to the
+message loop, so the Dictating callback path never blocks.
 
 `ToggleCore` gains a race-start entry (layout switch and wait, no `SendWinH`)
 and a native-stop entry (watchdog armed, Idle marked, restoration deferred,
-Escape reserved for corrective passes). The existing injected-start and
-Escape-first stop paths are unchanged. Unit tests cover all four entries and
+Escape reserved for corrective passes, native-close confirmation on the
+message-loop timer via `IsVoiceUiVisible` while the stop confirmation is
+pending). The existing injected-start and Escape-first stop paths are
+unchanged. Unit tests cover all four entries and
 unchanged Idle/Dictating transitions, including the exact layout-failure
 semantics: failed English confirmation leaves the core Idle, saves no session,
 and injects nothing, while the physical Win+H still proceeds natively because
@@ -150,6 +172,10 @@ replay) becomes a separate planlet and this one archives its findings.
 - Interception on, failed English activation: the core stays Idle with no saved
   session and no injected Win+H; the native bar still opens in the current
   layout (hook chained the press through).
+- Interception on, native close failure: a physical Win+H stop whose native
+  close fails (bar stays visible) triggers the bounded corrective Escape pass
+  from the message-loop timer and ends with the bar closed and the saved
+  layout and window restored.
 - Interception off (tray checkbox): native Win+H behavior is byte-identical to
   running without the app.
 - Ctrl+Alt+H toggling works identically with interception on and off, and an
@@ -185,7 +211,11 @@ replay) becomes a separate planlet and this one archives its findings.
 - Both stop paths are verified manually: physical Win+H stop closes via the
   native handler with no injected Escape before the chained event, and
   Ctrl+Alt+H stop keeps the existing Escape-first behavior. A physical stop
-  must never reopen the bar.
+  must never reopen the bar. Persistent native-close failure is verified
+  explicitly: with the bar forced to survive the native close (for example
+  the bar is reopened or fails to dismiss), the pending native stop runs a
+  bounded corrective Escape pass and ends with the bar closed, layout and
+  window restored, within the watchdog bounds.
 - The race success measurement is durable verification evidence (external,
   non-reproducible in CI, and it decides whether phase 2 is needed): record the
   per-press outcome in a committed file under `tmp/` and reference it from the
