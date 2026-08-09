@@ -75,12 +75,17 @@ restores focus to the saved window.
   exposure against the dictation target. While the core is already Idle, the
   key sequence completes (H down/up, Win up; releasing Win without the H
   would open the Start menu) but the immediate closing Escape is skipped,
-  because the foreground window is no longer the dictation target; instead
-  the stop-confirmation watchdog is armed (when not already pending) so the
-  bar opened by the completed gesture is closed by the existing
-  positive-evidence corrective machinery (SHOW event or timer-observed
-  visible bar, bounded corrections and expiry). A bar that opens with no
-  observable evidence is the repository's documented positive-only residual
+  because the foreground window is no longer the dictation target. Program
+  does not arm the stop-confirmation watchdog (ArmStopConfirm is private in
+  `ToggleCore`, which stays untouched) and does not correct from
+  timer-observed visibility (that correction runs only under the private
+  native-stop restore path). The tray-heal during the launch window already
+  arms `StopConfirmPending` (the session is still in its launch window while
+  the hold is armed), so the bar reopened by the completed gesture is closed
+  by the existing `OnVoiceUiShown` SHOW-event corrective machinery with its
+  usual bounds. When the watchdog is not pending (heal after launch
+  confirmation), no correction is reachable and a reopened bar without
+  observable evidence stays open under the documented positive-only residual
   limitation.
 - Checkbox state becomes intent flags in `Program.cs`:
   `ListeningEnabled` (default true), `HotkeyEnabled` (default false),
@@ -135,12 +140,17 @@ active when a toggle runs:
    core is still dictating, `CompleteWinHInjection()` as today (gesture
    completed, no Escape while dictating; the following Escape-first stop
    closes the bar). While the core is already Idle, complete the key
-   sequence (H down/up, Win up) without the immediate closing Escape and arm
-   the stop-confirmation watchdog when not already pending, so the bar opened
-   by the completed gesture is closed by the existing positive-evidence
-   corrective machinery (SHOW event or timer-observed visible bar, bounded
-   corrections and expiry). An injected Win key is never left held and no
-   Escape is sent into the window that replaced the dictation target.
+   sequence (H down/up, Win up) without the immediate closing Escape. Do not
+   arm the watchdog from Program (ArmStopConfirm is private in `ToggleCore`,
+   which stays untouched) and do not correct from timer-observed visibility
+   (that correction runs only under the private native-stop restore path):
+   rely on the `StopConfirmPending` already armed by the tray-heal during
+   the launch window, so the bar reopened by the completed gesture is closed
+   by the existing `OnVoiceUiShown` SHOW-event corrective machinery; when
+   the watchdog is not pending, no correction is reachable and the
+   positive-only residual limitation applies. An injected Win key is never
+   left held and no Escape is sent into the window that replaced the
+   dictation target.
 2. If `Core.IsDictating`, run `Core.StopDictation()` (the same Escape-first
    stop the close-key path uses), which restores the saved window and layout.
 3. Apply the disable (unregister hotkey and/or uninstall hook, kill timers as
@@ -219,8 +229,11 @@ them; their stored intent values still drive the restore on re-enable.
   exposure). While the core is already Idle (hold armed, session healed by
   the tray-menu focus loss), the key sequence completes without an immediate
   closing Escape, and the bar opened by the completed gesture is closed only
-  on positive evidence (SHOW event or timer-observed visible bar) through
-  the watchdog-armed corrective pass with the usual bounds; a bar without
+  on positive evidence (the `OnVoiceUiShown` SHOW event only; Program never
+  arms the watchdog and never corrects from timer-observed visibility, both
+  being private to `ToggleCore` which stays untouched) through
+  the watchdog-armed corrective pass with the usual bounds; when the
+  watchdog is not pending, no correction is reachable; a bar without
   observable evidence is the documented positive-only residual limitation.
   No Escape is sent into the window that replaced the dictation target.
 - Checking "Intercept Win+H" when hook installation fails (direct check or
