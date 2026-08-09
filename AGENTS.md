@@ -90,6 +90,27 @@ dotnet build VoiceTypingToggle.slnx
 dotnet test VoiceTypingToggle.slnx
 ```
 
+Formatting is enforced by CSharpier and `dotnet format` (style and analyzers;
+whitespace belongs to CSharpier). The pre-commit hook formats staged files
+automatically, but run the formatters manually while working on code so
+changes land formatted regardless of how they are committed:
+
+```powershell
+dotnet tool restore
+dotnet csharpier format .
+dotnet format VoiceTypingToggle.slnx style
+dotnet format VoiceTypingToggle.slnx analyzers
+```
+
+After formatting, verify the formatters report no remaining drift before
+finishing code changes:
+
+```powershell
+dotnet csharpier check .
+dotnet format VoiceTypingToggle.slnx style --verify-no-changes
+dotnet format VoiceTypingToggle.slnx analyzers --verify-no-changes
+```
+
 For publishing or deployment changes, also run:
 
 ```powershell
