@@ -61,9 +61,10 @@ should be disabled for normal use by unsetting `VTT_TRACE`.
 
 ## Development
 
-Formatting is enforced by CSharpier and `dotnet format`, driven by the
-`.editorconfig`. A Husky.Net pre-commit hook formats staged C# files
-automatically and blocks the commit if any task fails; CI runs the same checks.
+Formatting is enforced by CSharpier, driven by the `.editorconfig`. A
+Husky.Net pre-commit hook checks staged C# files and blocks the commit when
+they need formatting; CI runs `dotnet csharpier check .` as the same check at
+repo scope.
 
 After cloning, restore the pinned tools and install the git hooks:
 
