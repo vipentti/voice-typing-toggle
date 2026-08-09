@@ -21,7 +21,8 @@ restores focus to the saved window.
   Win+H-hold timer. Unchecked while Dictating runs the shared abort helper
   (canonical Escape-first stop `ToggleCore.StopDictation`: Escape, settle,
   restore saved window and layout, plus completing any in-flight injected
-  Win+H gesture) before tearing the listening machinery down; see the
+  Win+H gesture per the in-flight hold completion rule below) before tearing
+  the listening machinery down; see the
   tray-menu-during-dictation rule below for when that path actually runs.
   The application keeps running with the tray icon; the menu status line and
   tooltip show "Disabled".
@@ -31,7 +32,10 @@ restores focus to the saved window.
   preserved unchanged across a disable/re-enable cycle; re-enabling listening
   restores the operating-system state that matches the intents (timer, hook
   when "Intercept Win+H" is checked, hotkey when "Enable Ctrl+Alt+H" is
-  checked). Hotkey registration failure at re-enable clears the hotkey intent
+  checked). A failed hook installation during re-enable clears the intercept
+  intent (checkbox unchecked, physical Win+H native) without rolling back the
+  rest of the re-enable; only hotkey registration failure rolls back. Hotkey
+  registration failure at re-enable clears the hotkey intent
   instead of preserving it: the message box is shown, `ListeningEnabled` ends
   false, `HotkeyEnabled` ends false, the just-applied hook and timer are
   rolled back, and the application stays disabled (fail-closed,
@@ -46,8 +50,8 @@ restores focus to the saved window.
   (all other listening machinery stays as it is). Unchecking while Dictating
   runs the shared abort helper first (normally the session already ended via
   the tray-menu focus-loss rule below), then unregisters. Unchecking while a
-  Win+H-hold gesture is armed completes (or aborts) that gesture first,
-  exactly like the master toggle.
+  Win+H-hold gesture is armed completes that gesture per the in-flight hold
+  completion rule below, exactly like the master toggle.
 - Tray menu during dictation (existing behavior, preserved): `ShowTrayMenu`
   deliberately ends an active session before rendering: it restores focus to
   the app window and runs `CheckDictationFocus`, whose focus-loss self-heal
@@ -60,11 +64,33 @@ restores focus to the saved window.
   an active session, regardless of how the session state was reached. The
   menu status line is rendered after the heal and shows "Idle" when a
   dictation session was ended by opening the menu.
+- In-flight Win+H hold completion: `CompleteWinHInjection()` as it exists
+  today sends a closing Escape when `Core.IsDictating` is false, which is
+  exactly reachable when a hold is armed and the tray-menu heal already
+  returned the core to Idle. Toggle handlers therefore do not call it
+  unconditionally. The defined Program-level path branches on the core
+  state: while the core is still dictating, the gesture completes as today
+  (H down/up, Win up; no Escape while dictating) and the abort helper's
+  Escape-first stop then closes the bar, with the existing stop-before-launch
+  exposure against the dictation target. While the core is already Idle, the
+  key sequence completes (H down/up, Win up; releasing Win without the H
+  would open the Start menu) but the immediate closing Escape is skipped,
+  because the foreground window is no longer the dictation target; instead
+  the stop-confirmation watchdog is armed (when not already pending) so the
+  bar opened by the completed gesture is closed by the existing
+  positive-evidence corrective machinery (SHOW event or timer-observed
+  visible bar, bounded corrections and expiry). A bar that opens with no
+  observable evidence is the repository's documented positive-only residual
+  limitation.
 - Checkbox state becomes intent flags in `Program.cs`:
   `ListeningEnabled` (default true), `HotkeyEnabled` (default false),
   `InterceptWinHEnabled` (default true). The existing `KeyboardHook != 0`
   check stops doubling as the intercept checkbox state; the keyboard hook is
-  installed only when `InterceptWinHEnabled && ListeningEnabled`. The existing
+  installed only when `InterceptWinHEnabled && ListeningEnabled`. A failed
+  hook installation keeps the existing nonfatal semantics (trace-only
+  `hook-install-failed`, no message box): it clears `InterceptWinHEnabled` to
+  false at direct checking and at master re-enable alike, so the checkbox
+  shows unchecked and physical Win+H stays native. The existing
   `EnterCloseEnabled`/`SpaceCloseEnabled` bools are already intent flags and
   stay as they are; the hook callback's Enter/Space/close handling is
   additionally unreachable while the hook is uninstalled.
@@ -105,8 +131,16 @@ commands are selected while the core is Idle in normal operation. A shared
 abort helper guards every disable path for the case where a session is still
 active when a toggle runs:
 
-1. If `WinHHoldArmed`, run `CompleteWinHInjection()` so an injected Win key is
-   never left held and the gesture ends in a consistent state.
+1. If `WinHHoldArmed`, run the in-flight hold completion path: while the
+   core is still dictating, `CompleteWinHInjection()` as today (gesture
+   completed, no Escape while dictating; the following Escape-first stop
+   closes the bar). While the core is already Idle, complete the key
+   sequence (H down/up, Win up) without the immediate closing Escape and arm
+   the stop-confirmation watchdog when not already pending, so the bar opened
+   by the completed gesture is closed by the existing positive-evidence
+   corrective machinery (SHOW event or timer-observed visible bar, bounded
+   corrections and expiry). An injected Win key is never left held and no
+   Escape is sent into the window that replaced the dictation target.
 2. If `Core.IsDictating`, run `Core.StopDictation()` (the same Escape-first
    stop the close-key path uses), which restores the saved window and layout.
 3. Apply the disable (unregister hotkey and/or uninstall hook, kill timers as
@@ -114,7 +148,10 @@ active when a toggle runs:
 
 Re-enable applies the intents in dependency order: start the focus-watch
 timer, install the hook when `InterceptWinHEnabled`, register the hotkey when
-`HotkeyEnabled`. A hotkey registration failure on re-enable rolls the
+`HotkeyEnabled`. A failed hook installation at re-enable is nonfatal like
+today: it clears `InterceptWinHEnabled` (checkbox unchecked, physical Win+H
+native) and the re-enable continues with the timer and hotkey. A hotkey
+registration failure on re-enable rolls the
 just-applied hook and timer back, shows the startup-style message box, and
 ends with `ListeningEnabled` false and `HotkeyEnabled` false (the checkbox
 shows unchecked, matching the actual registration state). A direct
@@ -176,8 +213,20 @@ them; their stored intent values still drive the restore on re-enable.
   re-armed focus-watch timer drains the watchdog and shutdown completes or
   cancels under the existing semantics instead of stalling.
 - A disable requested while a Win+H-hold gesture is armed never leaves an
-  injected Win key held and never sends a stray Escape into an unrelated
-  foreground window; the session ends like a normal stop.
+  injected Win key held. While the core is still dictating, the gesture
+  completes as today and the session ends with the Escape-first stop (the
+  Escape targets the dictation app, the existing stop-before-launch
+  exposure). While the core is already Idle (hold armed, session healed by
+  the tray-menu focus loss), the key sequence completes without an immediate
+  closing Escape, and the bar opened by the completed gesture is closed only
+  on positive evidence (SHOW event or timer-observed visible bar) through
+  the watchdog-armed corrective pass with the usual bounds; a bar without
+  observable evidence is the documented positive-only residual limitation.
+  No Escape is sent into the window that replaced the dictation target.
+- Checking "Intercept Win+H" when hook installation fails (direct check or
+  master re-enable) keeps listening enabled, clears `InterceptWinHEnabled`
+  (checkbox unchecked), and leaves physical Win+H native; the failure is
+  nonfatal and trace-only, matching today's behavior.
 - All existing behavior with listening enabled and the hotkey checked is
   unchanged: Ctrl+Alt+H toggle, Win+H interception, Enter/Space close keys,
   focus-loss self-heal, stop-flash watchdog, shutdown restoration.
@@ -213,8 +262,14 @@ them; their stored intent values still drive the restore on re-enable.
   drains the watchdog and shutdown completes or cancels under the existing
   semantics, never stalls), Enter and Space close behavior and stop-flash
   watchdog behavior with listening active after a disable/re-enable cycle,
-  disable during an in-flight Win+H hold (no stuck Win, no stray Escape),
-  repeated toggle cycles, focus changes, and shutdown restoration. Session-only reset: change
+  during an in-flight Win+H hold with the core still dictating (gesture
+  completes, Escape-first stop, no stuck Win) and with the core already
+  healed Idle (start dictation, open the tray menu within the ~500 ms hold
+  window so the heal returns the core to Idle while the hold is still armed,
+  then disable: injected keys complete without an immediate Escape, no stuck
+  Win, no Escape in the window that replaced the dictation target, and the
+  bar is closed on positive evidence or expires under the documented
+  positive-only limitation), repeated toggle cycles, focus changes, and shutdown restoration. Session-only reset: change
   checkbox intents (for example enable "Enable Ctrl+Alt+H" and disable
   listening), restart the application, and verify every checkbox returns to
   its documented default (hotkey unchecked, listening and Intercept Win+H
