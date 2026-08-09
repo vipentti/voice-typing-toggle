@@ -17,6 +17,7 @@ sealed partial class Program
     const uint WmRButtonUp = 0x0205;
     const uint WmApp = 0x8000;
     const uint WmTrayIcon = WmApp + 1;
+    const uint WmEnterClose = WmApp + 2;
     const uint ModAlt = 0x0001;
     const uint ModControl = 0x0002;
     const uint WsExToolWindow = 0x00000080;
@@ -38,10 +39,13 @@ sealed partial class Program
     const uint MfString = 0x00000000;
     const uint MfDisabled = 0x00000002;
     const uint MfGrayed = 0x00000001;
+    const uint MfChecked = 0x00000008;
+    const uint MfUnchecked = 0x00000000;
     const uint MfSeparator = 0x00000800;
     const uint TpmRightButton = 0x0002;
     const uint TpmReturnCommand = 0x0100;
     const uint MenuExitId = 1;
+    const uint MenuInterceptWinHId = 2;
     const int FocusWatchIntervalMs = 250; // bar auto-closes on focus change; heal within a quarter second
     const uint KeyeventfExtendedKey = 0x0001;
     const uint KeyeventfKeyUp = 0x0002;
@@ -497,6 +501,18 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 1; // allow shutdown
+            case WmEnterClose when ShutdownPolicy.Kind is null:
+                // Deferred Enter-close: the swallowed physical Enter cannot close
+                // the bar itself, so the standard Escape-first stop runs here on
+                // the message loop (never from the hook callback).
+                TraceAction("enter-close");
+                if (Core.IsDictating)
+                {
+                    Core.StopDictation();
+                }
+                UpdateTrayTooltip();
+                Trace.Flush();
+                return 0;
             case WmTrayIcon when ShutdownPolicy.Kind is null:
                 HandleTrayIconMessage(wParam, lParam);
                 return 0;
@@ -584,6 +600,9 @@ sealed partial class Program
             _ = AppendMenuW(menu, informationalFlags, 0, $"Status: {CurrentStatus}");
             _ = AppendMenuW(menu, informationalFlags, 0, "Hotkey: Ctrl+Alt+H");
             _ = AppendMenuW(menu, MfSeparator, 0, null);
+            // Session-only interception toggle; the checkmark reflects the live hook state.
+            _ = AppendMenuW(menu, MfString | (KeyboardHook != 0 ? MfChecked : MfUnchecked), MenuInterceptWinHId, "Intercept Win+H");
+            _ = AppendMenuW(menu, MfSeparator, 0, null);
             _ = AppendMenuW(menu, MfString, MenuExitId, "Exit");
 
             _ = SetForegroundWindow(AppWindow);
@@ -594,11 +613,29 @@ sealed partial class Program
             {
                 RequestOrderlyShutdown(ShutdownKind.UserExit);
             }
+            else if (command == MenuInterceptWinHId)
+            {
+                ToggleInterception();
+            }
         }
         finally
         {
             _ = DestroyMenu(menu);
         }
+    }
+
+    static void ToggleInterception()
+    {
+        if (KeyboardHook != 0)
+        {
+            UninstallKeyboardHook(); // native Win+H behavior returns untouched
+        }
+        else
+        {
+            TryInstallKeyboardHook();
+        }
+        UpdateTrayTooltip();
+        Trace.Flush();
     }
 
     static string CurrentStatus => Core.IsDictating ? "Dictating" : "Idle";
@@ -909,10 +946,11 @@ sealed partial class Program
         {
             return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
         }
+        bool swallow = false;
         try
         {
             // Never inspect key content beyond vk/flags. Injected events (our
-            // own SendWinH) must not arm or trigger the chord.
+            // own SendWinH/SendEscape) must not arm or trigger the chord.
             var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
             if ((info.flags & LlkhfInjected) != 0)
             {
@@ -951,9 +989,14 @@ sealed partial class Program
                     TraceAction("escape-observed");
                     OnExternalCloseObservation();
                     break;
-                case VK_RETURN when down && Core.IsDictating:
+                case VK_RETURN when down && Core.IsDictating && !InHotkeyDispatch:
+                    // The bar does not close on Enter natively. Swallow the key
+                    // (scoped exception to the no-swallow rule: a chained Enter
+                    // would reach the app as a stray newline) and close the bar
+                    // with the standard Escape-first stop from the message loop.
                     TraceAction("enter-observed");
-                    OnExternalCloseObservation();
+                    swallow = true;
+                    _ = PostMessageW(AppWindow, WmEnterClose, 0, 0);
                     break;
             }
         }
@@ -963,7 +1006,7 @@ sealed partial class Program
         {
             TraceAction("hook-error"); // never swallow input, even on failure
         }
-        return CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
+        return swallow ? 1 : CallNextHookEx(KeyboardHook, nCode, wParam, lParam);
     }
 
     // Observation dispatch (called from the hook callback on the message-loop

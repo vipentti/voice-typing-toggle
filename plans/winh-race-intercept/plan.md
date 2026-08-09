@@ -18,9 +18,16 @@ Win+H behavior is preserved).
   every path. For `nCode < 0` it must chain immediately and return that result
   without any other processing. Plain Win, Win+E, Win+D and all other shortcuts
   pass through untouched. While the core is dictating, the callback also
-  matches physical Escape (vk `0x1B`) and Enter (vk `0x0D`) keydowns so an
-  external close with those keys restores the saved state instead of leaving
-  it stale; both are control keys matched by vk only, never typed content.
+  matches physical Escape (vk `0x1B`) and Enter (vk `0x0D`) keydowns; both are
+  control keys matched by vk only, never typed content. Escape: the user's own
+  key closes the bar natively, so the callback only restores the saved state
+  (native-stop path, no injection). Enter: the bar does NOT close on Enter
+  natively, so the callback swallows that one key (a deliberate, scope-limited
+  exception to the no-swallow rule, Enter-while-dictating only) and defers the
+  standard Escape-first stop to the message loop, which closes the bar and
+  restores the saved state; the swallowed Enter never reaches the bar or the
+  app, so no stray newline is inserted. Enter while Idle passes through
+  untouched.
 - Win modifier detection: the callback tracks `VK_LWIN`/`VK_RWIN` down/up state
   from the hook events themselves (non-injected keydown sets the flag, keyup
   clears it). `GetKeyState` is not used: it reflects the hook thread's own
@@ -36,9 +43,12 @@ Win+H behavior is preserved).
   chord is re-armed. Re-arm happens when the H keyup or either Win keyup is
   observed. Key-up and auto-repeat callbacks therefore never produce additional
   observations, and a fast Idle -> Dictating -> Idle double-toggle from one
-  chord is impossible. While dictating, the first non-injected Escape or Enter
-  keydown dispatches the native stop; auto-repeat and further presses are
-  no-ops because the core is already Idle after the first dispatch.
+  chord is impossible. While dictating, the first non-injected Escape keydown
+  dispatches the native stop (auto-repeat and further presses are no-ops
+  because the core is already Idle after the first dispatch). The first
+  non-injected Enter keydown while dictating is swallowed and defers the
+  standard stop; auto-repeat Enter keydowns are also swallowed and their
+  deferred stops no-op once the core is Idle.
 - Start path (Idle): on the single observation per chord, the callback
   performs the layout request and confirmation synchronously BEFORE chaining
   the H event, through a dedicated hook-safe bounded request path. Chaining
@@ -65,10 +75,12 @@ Win+H behavior is preserved).
   entry that arms the existing stop-confirmation watchdog, marks Idle, and
   defers restoration (saved window and layout) to the message loop after a
   short settle. The Ctrl+Alt+H stop path (Escape-first) is unchanged. An
-  external close via physical Escape or Enter uses the same native-stop entry:
-  the user's own key closes the bar, the callback only restores saved layout
-  and focus afterwards, and the positive-only watchdog covers a close that
-  fails.
+  external close via physical Escape uses the same native-stop entry: the
+  user's own key closes the bar, the callback only restores saved layout and
+  focus afterwards, and the positive-only watchdog covers a close that fails.
+  Enter while dictating runs the standard Escape-first stop from the message
+  loop (never from the callback), because the bar does not close on Enter
+  natively.
 - Native-close confirmation: closure cannot be proven by observation, so the
   confirmation is positive-only, consistent with the repository's treatment of
   the TextInputHost popup (absence is explicitly inconclusive: the popup is
@@ -202,9 +214,12 @@ replay) becomes a separate planlet and this one archives its findings.
   injected Win+H never triggers the hook path (no double-toggle).
 - Focus change while dictating (Win+H- or Ctrl+Alt+H-started) triggers the
   existing self-heal.
-- Closing dictation with physical Escape or Enter (instead of Win+H or
-  Ctrl+Alt+H) restores the saved layout and focus and returns the core to
-  Idle; the next start then begins from the correct starting layout.
+- Closing dictation with physical Escape restores the saved layout and focus
+  and returns the core to Idle; the next start then begins from the correct
+  starting layout.
+- Pressing Enter while dictating closes the bar (injected Escape from the
+  message loop) and restores the saved layout and focus, with no stray newline
+  inserted in the target app; Enter while Idle passes through untouched.
 - Race success: for at least 9 of 10 physical presses in each tested starting
   layout (fi-FI and one non-Finnish), Voice Typing itself is observably using
   English: the bar's language indicator shows English, or a controlled English
@@ -229,8 +244,10 @@ replay) becomes a separate planlet and this one archives its findings.
   non-Finnish starting layouts, failed English-layout activation (observable
   result: native bar opens in current layout, core stays Idle), repeated
   toggles, hold-and-release chord (single toggle), focus changes, shutdown
-  restoration, external close via physical Escape and Enter while dictating
-  (layout and focus restored, core Idle, next start correct), elevated-app
+  restoration, external close via physical Escape while dictating (layout and
+  focus restored, core Idle, next start correct), Enter while dictating
+  (bar closes, layout and focus restored, no stray newline in the target app),
+  Enter while Idle (native behavior, nothing swallowed), elevated-app
   limitation (a non-elevated hook cannot see input destined for elevated
   windows), and interception off/on at runtime.
 - Both stop paths are verified manually: physical Win+H stop closes via the
@@ -273,5 +290,9 @@ replay) becomes a separate planlet and this one archives its findings.
   reach elevated windows.
 - Hook safety: exception-free native callback, no key logging, uninstalled
   when disabled; a bug here affects every keystroke system-wide.
+- Swallowing Enter while dictating is a deliberate, scope-limited exception to
+  the no-swallow contract; it exists only so the close-on-Enter feature
+  produces no stray newline. Any future general key interception must
+  re-justify the exception.
 - Windows 10 and older Windows 11 builds are untested; hook mechanics are the
   same, shell hotkey ownership differs.
