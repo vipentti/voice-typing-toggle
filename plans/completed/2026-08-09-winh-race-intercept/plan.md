@@ -115,7 +115,7 @@ Win+H behavior is preserved).
 - Docs: revise the concept-doc exclusion of physical Win+H interception (the
   guardrail "Do not intercept the physical Win+H shortcut" becomes an explicit
   opt-out feature), update the repo AGENTS.md guardrail, and create tracked
-  `tmp/winh-interception-research.md` from the Research Evidence section below
+  `docs/winh-interception-research.md` from the Research Evidence section below
   so the evidence travels with the repo.
 
 ## Research Evidence
@@ -123,7 +123,7 @@ Win+H behavior is preserved).
 Embedded from the external spike document (originally
 `.tmp/winh-interception-research.md` outside this repository, Windows 11 23H2
 build 22631, throwaway spike in `%TEMP%\winh-spike`). This section is the
-source for the tracked `tmp/winh-interception-research.md`; T5 reproduces that
+source for the tracked `docs/winh-interception-research.md`; T5 reproduces that
 file from this content.
 
 - `RegisterHotKey(MOD_WIN, 'H')` fails with error 1409
@@ -274,7 +274,7 @@ replay) becomes a separate planlet and this one archives its findings.
   popup signal is documented as the accepted residual limitation.
 - The race success measurement is durable verification evidence (external,
   non-reproducible in CI, and it decides whether phase 2 is needed): record the
-  per-press outcome in a committed file under `tmp/` and reference it from the
+  per-press outcome in a committed file under `docs/` and reference it from the
   final task. Per-press pass = Voice Typing observably using English via the
   manual signal above (required). English HKL confirmation and bar visibility
   (`IsVoiceUiVisible`, non-required due to its false negatives) are supporting
