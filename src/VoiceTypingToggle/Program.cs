@@ -321,14 +321,7 @@ sealed partial class Program
     private static bool HotkeyRegistered;
     private static bool FocusTimerRunning;
     private static bool TrayIconInstalled;
-    private static bool ShutdownRequested;
     private static readonly ShutdownDecision ShutdownPolicy = new();
-
-    private enum ShutdownReason
-    {
-        UserExit,
-        FatalTrayLoss,
-    }
 
     static int Main()
     {
@@ -396,13 +389,14 @@ sealed partial class Program
         if (AppIcon == 0)
         {
             MessageBoxW(AppWindow, "Could not load the embedded application icon.", "Voice Typing Toggle", 0x10);
-            RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss);
+            RequestOrderlyShutdown(ShutdownKind.FatalTrayLoss);
             return 1;
         }
 
-        var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, () => RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss));
-        if (!trayIcon.Install())
+        if (!TryAddTrayIcon())
         {
+            ReportTrayIconFailure(isRecreation: false);
+            RequestOrderlyShutdown(ShutdownKind.FatalTrayLoss);
             return 1;
         }
 
@@ -426,7 +420,7 @@ sealed partial class Program
     {
         switch (msg)
         {
-            case WmHotkey when wParam == HotkeyId && !ShutdownRequested:
+            case WmHotkey when wParam == HotkeyId && ShutdownPolicy.Kind is null:
                 TraceAction("hotkey");
                 Core.Toggle();
                 UpdateTrayTooltip();
@@ -444,21 +438,34 @@ sealed partial class Program
                 UpdateTrayTooltip();
                 Trace.Flush();
                 return 1; // allow shutdown
-            case WmTrayIcon when !ShutdownRequested:
+            case WmTrayIcon when ShutdownPolicy.Kind is null:
                 HandleTrayIconMessage(wParam, lParam);
                 return 0;
-            case WmContextMenu when !ShutdownRequested:
+            case WmContextMenu when ShutdownPolicy.Kind is null:
                 ShowTrayMenu(PointFromContextMenu(lParam));
                 return 0;
         }
-        if (msg == TaskbarCreatedMessage && !ShutdownRequested)
+        if (msg == TaskbarCreatedMessage)
         {
-            TrayIconInstalled = false;
-            var trayIcon = new TrayIconLifecycle(TryAddTrayIcon, ReportTrayIconFailure, () => RequestOrderlyShutdown(ShutdownReason.FatalTrayLoss));
-            trayIcon.RecreateAfterTaskbarRestart();
+            HandleTaskbarRestart();
             return 0;
         }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
+    // Explorer restarts destroy the notification icon and re-broadcast
+    // TaskbarCreated. Always react, even while a shutdown drains: either the
+    // icon is restored, or the shutdown escalates to fatal tray loss so the
+    // application never runs invisibly.
+    static void HandleTaskbarRestart()
+    {
+        TrayIconInstalled = false;
+        if (TryAddTrayIcon())
+        {
+            return;
+        }
+        ReportTrayIconFailure(isRecreation: true);
+        RequestOrderlyShutdown(ShutdownKind.FatalTrayLoss);
     }
 
     static void HandleTrayIconMessage(nint wParam, nint lParam)
@@ -526,7 +533,7 @@ sealed partial class Program
             ReturnFocusToNotificationArea();
             if (command == MenuExitId)
             {
-                RequestOrderlyShutdown(ShutdownReason.UserExit);
+                RequestOrderlyShutdown(ShutdownKind.UserExit);
             }
         }
         finally
@@ -610,18 +617,10 @@ sealed partial class Program
         MessageBoxW(AppWindow, text, "Voice Typing Toggle", 0x10);
     }
 
-    static void RequestOrderlyShutdown(ShutdownReason reason)
+    static void RequestOrderlyShutdown(ShutdownKind reason)
     {
-        if (ShutdownRequested)
-        {
-            return;
-        }
-        ShutdownRequested = true;
-        ShutdownAction initialAction = ShutdownPolicy.Begin(
-            reason == ShutdownReason.UserExit ? ShutdownKind.UserExit : ShutdownKind.FatalTrayLoss,
-            Core.IsDictating,
-            Core.StopConfirmPending);
-        TraceAction(reason == ShutdownReason.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
+        ShutdownAction initialAction = ShutdownPolicy.Begin(reason, Core.IsDictating, Core.StopConfirmPending);
+        TraceAction(reason == ShutdownKind.UserExit ? "user-exit-requested" : "fatal-tray-loss-requested");
         if (Core.IsDictating)
         {
             Core.Toggle(); // normal stop keeps the watchdog armed for late popups
@@ -635,7 +634,7 @@ sealed partial class Program
 
     static void ContinueShutdownIfNeeded()
     {
-        if (!ShutdownRequested)
+        if (ShutdownPolicy.Kind is null)
         {
             return;
         }
@@ -651,25 +650,30 @@ sealed partial class Program
         }
         if (action == ShutdownAction.Correct)
         {
-            SendEscape();
-            Core.RestoreIfDictating();
+            Core.CorrectPendingStop(); // canonical saved-stop correction
             return;
         }
         if (action == ShutdownAction.CancelUserExit)
         {
-            ShutdownRequested = false;
+            if (!TrayIconInstalled)
+            {
+                // Cancellation must not leave the app running invisibly: the
+                // lost icon upgrades the user exit to fatal tray loss.
+                RequestOrderlyShutdown(ShutdownKind.FatalTrayLoss);
+                return;
+            }
+            ShutdownPolicy.Cancel();
             MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed. Exit was cancelled so monitoring can continue.", "Voice Typing Toggle", 0x10);
             return;
         }
         MessageBoxW(AppWindow, "Voice Typing could not be confirmed closed after the notification icon was lost. It may require manual dismissal.", "Voice Typing Toggle", 0x10);
-        SendEscape();
-        Core.RestoreIfDictating();
+        Core.CorrectPendingStop(); // canonical last-ditch close before teardown
         CompleteShutdown();
     }
 
     static void CompleteShutdown()
     {
-        if (!ShutdownRequested)
+        if (ShutdownPolicy.Kind is null)
         {
             return;
         }

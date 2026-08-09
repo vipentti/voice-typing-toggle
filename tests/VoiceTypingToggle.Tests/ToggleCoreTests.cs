@@ -88,58 +88,6 @@ public class SelectEnglishLayoutTests
     }
 }
 
-public class TrayIconLifecycleTests
-{
-    [Fact]
-    public void InitialAddFailureReportsAndRequestsShutdown()
-    {
-        var reportedRecreations = new List<bool>();
-        int shutdownRequests = 0;
-        var lifecycle = new TrayIconLifecycle(
-            tryAdd: () => false,
-            reportFailure: reportedRecreations.Add,
-            requestOrderlyShutdown: () => shutdownRequests++);
-
-        bool installed = lifecycle.Install();
-
-        Assert.False(installed);
-        Assert.Equal([false], reportedRecreations);
-        Assert.Equal(1, shutdownRequests);
-    }
-
-    [Fact]
-    public void TaskbarRecreationFailureReportsAndRequestsShutdown()
-    {
-        var reportedRecreations = new List<bool>();
-        int shutdownRequests = 0;
-        var lifecycle = new TrayIconLifecycle(
-            tryAdd: () => false,
-            reportFailure: reportedRecreations.Add,
-            requestOrderlyShutdown: () => shutdownRequests++);
-
-        lifecycle.RecreateAfterTaskbarRestart();
-
-        Assert.Equal([true], reportedRecreations);
-        Assert.Equal(1, shutdownRequests);
-    }
-
-    [Fact]
-    public void SuccessfulAddDoesNotReportOrRequestShutdown()
-    {
-        int reports = 0;
-        int shutdownRequests = 0;
-        var lifecycle = new TrayIconLifecycle(
-            tryAdd: () => true,
-            reportFailure: _ => reports++,
-            requestOrderlyShutdown: () => shutdownRequests++);
-
-        lifecycle.RecreateAfterTaskbarRestart();
-
-        Assert.Equal(0, reports);
-        Assert.Equal(0, shutdownRequests);
-    }
-}
-
 public class ShutdownDecisionTests
 {
     [Fact]
@@ -166,7 +114,26 @@ public class ShutdownDecisionTests
         Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
         Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
         Assert.Equal(ShutdownAction.CancelUserExit, decision.Advance(false, false, true));
-        Assert.False(decision.Requested);
+        decision.Cancel(); // the coordinator cancels only with the tray icon installed again
+        Assert.Null(decision.Kind);
+    }
+
+    [Fact]
+    public void ExplorerRestartDuringUserExitUpgradesToFatalShutdown()
+    {
+        var decision = new ShutdownDecision();
+        decision.Begin(ShutdownKind.UserExit, true, false); // user Exit while dictating
+        decision.Advance(false, false, true);               // bar still visible after watchdog expiry
+
+        // Explorer restarts mid-drain and the icon cannot be recreated: the
+        // coordinator escalates instead of letting the Exit cancel later.
+        Assert.Equal(ShutdownAction.Wait, decision.Begin(ShutdownKind.FatalTrayLoss, false, false));
+        Assert.Equal(ShutdownKind.FatalTrayLoss, decision.Kind);
+
+        // The drain continues with a fresh budget and now fails closed.
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.Correct, decision.Advance(false, false, true));
+        Assert.Equal(ShutdownAction.ForceFatalShutdown, decision.Advance(false, false, true));
     }
 
     [Fact]
@@ -295,6 +262,46 @@ public class ToggleCoreTests
             core.CheckDictationFocus();
         }
         Assert.False(core.StopConfirmPending);
+    }
+
+    [Fact]
+    public void CorrectPendingStopRunsCanonicalSavedStopCorrection()
+    {
+        var (core, requests) = NewCore();
+        int escapes = 0;
+        var focusCalls = new List<nint>();
+        var sleeps = new List<int>();
+        core.SendEscape = () => escapes++;
+        core.RestoreFocus = h => { focusCalls.Add(h); return true; };
+        core.Sleep = sleeps.Add;
+        var fg = new Queue<nint>([Target, Target, Target, 0]); // start guard, stop guard, stop retry check, corrective retry check
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start
+        core.Toggle(); // stop: snapshot armed, 2 escapes
+        Assert.Equal(2, escapes);
+
+        core.CorrectPendingStop(); // shutdown drain: bar still visible
+
+        Assert.Equal(3, escapes); // corrective Escape only (retry check saw the candidate)
+        Assert.Equal([Target, Target], focusCalls); // focus restored via the snapshot
+        Assert.Equal([30, 100], sleeps); // fast stop settle, then the corrective safe settle
+        Assert.Equal([(Target, EnUs), (Target, EnGb)], requests); // layout restored via the snapshot
+    }
+
+    [Fact]
+    public void CorrectPendingStopIgnoredWhileDictating()
+    {
+        var (core, _) = NewCore();
+        int escapes = 0;
+        core.SendEscape = () => escapes++;
+        var fg = new Queue<nint>([Target]);
+        core.GetForeground = () => fg.Dequeue();
+
+        core.Toggle(); // start only; no stop snapshot, dictating must never be corrected
+        core.CorrectPendingStop();
+
+        Assert.Equal(0, escapes);
     }
 
     [Fact]
