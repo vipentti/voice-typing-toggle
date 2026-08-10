@@ -8,9 +8,7 @@ Windows Voice Typing, and restores the actual layout that was active before
 dictation.
 
 Read `docs/voice-typing-toggle-concept.md` before product-affecting work. Its
-goals, non-goals, security constraints, and acceptance criteria are product
-guardrails. Sections the document marks **Historical** (see its header
-status table) are context rather than current requirements.
+goals and non-goals are product guardrails.
 
 The concept document records product intent; the implementation and tests record
 current behavior; an active planlet records the scope of work in progress. If

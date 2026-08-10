@@ -1,25 +1,27 @@
 # Security Policy
 
-Voice Typing Toggle is a user-level Windows background utility. It accepts no
-untrusted input, opens no network connections, and performs no background
-networking.
+Voice Typing Toggle is a user-level Windows background utility. It performs
+no background networking and accepts no network input. Its only external
+input is physical keyboard events observed through a low-level keyboard hook:
+the `Win+H` chord and, while dictating, the Escape, Enter, and Space keys.
 
 ## Reporting a vulnerability
 
-Do not file a GitHub issue for a security problem. Issue history becomes
-visible to everyone when the repository is made public, so a public issue
-would disclose the report before it is handled.
+Do not create GitHub issues for security problems. Issue history becomes
+visible to everyone when the repository is made public, so an issue would
+disclose the report before it is handled.
 
 The repository is currently private, and GitHub private vulnerability
-reporting cannot be enabled at repository level until it is public. Until
-then, report through a private channel to the repository owner, for example a
-direct message or a private email. Do not create issues that would become
-public history.
+reporting cannot be enabled at repository level until it is public. Until it
+is enabled and verified, the repository has no documented public reporting
+channel; reports reach the owner through the existing private collaboration
+surface.
 
 **Post-publication step (owner):** immediately after the repository is made
 public, enable GitHub private vulnerability reporting in the repository
 settings and verify it by drafting and submitting a test advisory. This must
-be the first repository setting change after the visibility change.
+be the first repository setting change after the visibility change. Private
+vulnerability reporting is then the single documented reporting path.
 
 ## Security and privacy posture
 
