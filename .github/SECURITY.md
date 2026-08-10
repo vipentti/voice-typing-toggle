@@ -8,20 +8,12 @@ the `Win+H` chord and, while dictating, the Escape, Enter, and Space keys.
 ## Reporting a vulnerability
 
 Do not create GitHub issues for security problems. Issue history becomes
-visible to everyone when the repository is made public, so an issue would
-disclose the report before it is handled.
+visible to everyone, so an issue would disclose the report before it is
+handled.
 
-The repository is currently private, and GitHub private vulnerability
-reporting cannot be enabled at repository level until it is public. Until it
-is enabled and verified, the repository has no documented public reporting
-channel; reports reach the owner through the existing private collaboration
-surface.
-
-**Post-publication step (owner):** immediately after the repository is made
-public, enable GitHub private vulnerability reporting in the repository
-settings and verify it by drafting and submitting a test advisory. This must
-be the first repository setting change after the visibility change. Private
-vulnerability reporting is then the single documented reporting path.
+Use the **Report a vulnerability** button on the repository's Security page.
+GitHub private vulnerability reporting sends the report privately to the
+repository owner for review and coordinated resolution.
 
 ## Security and privacy posture
 
