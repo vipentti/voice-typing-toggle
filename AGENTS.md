@@ -8,9 +8,7 @@ Windows Voice Typing, and restores the actual layout that was active before
 dictation.
 
 Read `docs/voice-typing-toggle-concept.md` before product-affecting work. Its
-goals, non-goals, security constraints, and acceptance criteria are product
-guardrails. Sections describing proposed designs, future enhancements, and open
-questions are context rather than automatically current requirements.
+goals and non-goals are product guardrails.
 
 The concept document records product intent; the implementation and tests record
 current behavior; an active planlet records the scope of work in progress. If
@@ -50,12 +48,18 @@ choosing one source.
 
 ## Current architecture
 
-- `src/VoiceTypingToggle/Program.cs` owns process startup, the hidden Win32
-  message window, P/Invoke declarations, global hotkey and timer dispatch,
-  synthetic input, focus operations, and user-visible startup errors.
+- `src/VoiceTypingToggle/Program.cs` and its partials (`Program.Input.cs`,
+  `Program.KeyboardHook.cs`, `Program.Messages.cs`, `Program.Shutdown.cs`,
+  `Program.Tray.cs`, `Program.VoiceUi.cs`) own process startup, the hidden
+  Win32 message window, global hotkey and timer dispatch, the keyboard hook,
+  synthetic input, focus operations, tray UI, and shutdown handling.
+- `src/VoiceTypingToggle/NativeMethods.cs` holds the P/Invoke declarations
+  and Win32 constants.
 - `src/VoiceTypingToggle/ToggleCore.cs` owns English-layout selection and the
   Idle/Dictating state machine. Keep it free of direct Win32 calls; operating
   system interactions should remain injected seams that unit tests can fake.
+- `src/VoiceTypingToggle/DiagnosticTrace.cs` implements the opt-in `VTT_TRACE`
+  CSV tracing; `ShutdownDecision.cs` models the exit policy.
 - `tests/VoiceTypingToggle.Tests/ToggleCoreTests.cs` covers layout selection,
   transitions, failure behavior, restoration, and focus-loss recovery.
 
