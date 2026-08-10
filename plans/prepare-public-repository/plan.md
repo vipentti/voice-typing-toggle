@@ -30,12 +30,15 @@ the repository, distribute binaries, or redesign the application.
   context, but label it so a public reader cannot mistake old MVP proposals or
   non-goals for current behavior. Keep the implementation and tests as the
   source of truth.
-- Add a concise root or `.github/SECURITY.md`. Establish an honest private
-  reporting route by enabling GitHub private vulnerability reporting when
-  available, then direct suspected vulnerabilities there instead of to public
-  issues. Describe the narrow user-level keyboard-hook and synthetic-input
-  behavior, absence of background networking, and prohibition on dictated-text
-  or typed-content logging without claiming an unconfigured contact channel.
+- Add a concise root or `.github/SECURITY.md`. While the repository remains
+  private, do not claim that GitHub private vulnerability reporting is enabled
+  or offer an unconfigured contact channel. Direct future public users away
+  from public issues and describe the narrow user-level keyboard-hook and
+  synthetic-input behavior, absence of background networking, and prohibition
+  on dictated-text or typed-content logging. Add an explicit publication step
+  that enables and verifies GitHub private vulnerability reporting immediately
+  after the visibility change, when GitHub makes the repository-level setting
+  available.
 - Add explicit `permissions: contents: read` to `.github/workflows/ci.yml`.
   Keep the workflow structure and required checks intact. Pin GitHub-maintained
   actions to immutable commits only if the exact revisions can be verified
@@ -54,7 +57,8 @@ the repository, distribute binaries, or redesign the application.
 - Finish with a public-readiness report covering license, documentation, CI
   permissions, security reporting, history scan, asset provenance, and any
   remaining blockers. Its verdict must be exactly `READY TO MAKE PUBLIC` or
-  `NOT READY TO MAKE PUBLIC`.
+  `NOT READY TO MAKE PUBLIC`. Include the immediate post-publication security
+  step without performing the visibility change in this plan.
 
 ## Out of Scope
 
@@ -80,8 +84,10 @@ rewrite.
 
 Keep CI changes limited to token permissions unless immutable action revisions
 are independently verified. Do not redesign jobs or add publishing behavior.
-The security policy must refer only to a reporting mechanism that has actually
-been configured.
+The security policy must not claim that private vulnerability reporting is
+active while the repository remains private. The publication procedure must
+make enabling and verifying that GitHub-native reporting path the first
+repository setting change immediately after public visibility is confirmed.
 
 Treat the history audit as an evidence-gathering gate. Scan all remote-visible
 refs and inspect suspicious results manually to distinguish real exposure from
@@ -102,8 +108,11 @@ rationale for any concern. Never rewrite history as part of this plan.
   without overstating compatibility.
 - `AGENTS.md` and the concept document no longer present obsolete architecture,
   tray behavior, or hook assumptions as current requirements.
-- A concise security policy offers a working private reporting path and
-  accurately describes the application's security and privacy posture.
+- A concise security policy accurately describes the application's security and
+  privacy posture, does not claim private vulnerability reporting is enabled
+  while the repository is private, and is paired with a publication procedure
+  requiring that reporting path to be enabled and verified immediately after
+  the visibility change.
 - CI declares `contents: read` and retains formatting, build, test, and Native
   AOT publish validation with no unnecessary token permissions.
 - The current tree, all GitHub-visible refs, deleted historical files, pull
@@ -142,8 +151,10 @@ Planlet files.
 
 - Applying MIT to an asset with unclear provenance would create a licensing
   problem. Unknown provenance blocks readiness until resolved.
-- A private reporting mechanism mentioned in `SECURITY.md` must be enabled
-  before the policy relies on it.
+- GitHub private vulnerability reporting cannot be enabled at repository level
+  until the repository is public. Readiness therefore depends on truthful
+  pre-public wording and an explicit immediate post-publication activation and
+  verification step, not on impossible pre-public activation.
 - Secret scanners produce false positives and can miss contextual privacy
   issues. Targeted review remains necessary, especially for deleted temporary
   files and GitHub collaboration history.
