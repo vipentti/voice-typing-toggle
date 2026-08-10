@@ -26,10 +26,10 @@ the repository, distribute binaries, or redesign the application.
   does not provide an installer, packaged GitHub release, or speech-recognition
   implementation.
 - Reconcile clearly stale current-state material in `AGENTS.md` and
-  `docs/voice-typing-toggle-concept.md`. Preserve useful historical design
-  context, but label it so a public reader cannot mistake old MVP proposals or
-  non-goals for current behavior. Keep the implementation and tests as the
-  source of truth.
+  `docs/voice-typing-toggle-concept.md`. Keep only current product intent
+  (goals and non-goals) in the concept document; delete obsolete
+  implementation proposals and rely on Git history for them. Keep the
+  implementation and tests as the source of truth.
 - Add a concise root or `.github/SECURITY.md`. While the repository remains
   private, do not claim that GitHub private vulnerability reporting is enabled
   or offer an unconfigured contact channel. Direct future public users away
@@ -54,10 +54,11 @@ the repository, distribute binaries, or redesign the application.
 - Validate non-code asset provenance before declaring the MIT-licensed
   repository ready. If provenance or redistribution rights cannot be
   established, report that as a blocker rather than inventing attribution.
-- Finish with a public-readiness report covering license, documentation, CI
-  permissions, security reporting, history scan, asset provenance, and any
-  remaining blockers. Its verdict must be exactly `READY TO MAKE PUBLIC` or
-  `NOT READY TO MAKE PUBLIC`. Include the immediate post-publication security
+- Finish with the public-readiness handoff in the pull-request description,
+  covering license, documentation, CI permissions, security reporting, history
+  scan, asset provenance, and any remaining blockers. Its verdict must be
+  exactly `READY TO MAKE PUBLIC` or `NOT READY TO MAKE PUBLIC`. Include the
+  immediate post-publication security
   step without performing the visibility change in this plan.
 
 ## Out of Scope
@@ -78,9 +79,8 @@ the repository, distribute binaries, or redesign the application.
 Start with the legal and provenance gate because the approved MIT license must
 not be applied to material the owner cannot redistribute. Use the smallest
 necessary documentation edits after tracing defaults and limitations directly
-to source and tests. Historical concept material should be retained where it
-explains design decisions, with explicit status language instead of a wholesale
-rewrite.
+to source and tests. The concept document keeps only current product intent;
+obsolete proposals are deleted and Git history owns them.
 
 Keep CI changes limited to token permissions unless immutable action revisions
 are independently verified. Do not redesign jobs or add publishing behavior.
