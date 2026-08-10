@@ -1,22 +1,67 @@
 # Voice Typing Toggle — Concept
 
+> **Document status:** Written before the first implementation as a design
+> proposal. It records product intent and design rationale; current behavior
+> is defined by the implementation and tests in `src/` and `tests/`, by the
+> `AGENTS.md` product guardrails, and by the `README.md` user documentation.
+> Sections marked **Historical** below are pre-implementation proposals:
+> treat them as context, never as current requirements. Where this document
+> and the implementation disagree, the implementation and tests win.
+>
+> Section status:
+>
+> | Section | Status |
+> | --- | --- |
+> | Goals | Current |
+> | Non-goals | Current, one obsolete item marked |
+> | Proposed Technology | Historical |
+> | High-Level Architecture | Historical |
+> | Notification area behavior | Current |
+> | Default toggle hotkey | Historical (primary entry is now physical Win+H interception) |
+> | Start/Stop voice typing | Historical |
+> | State Model | Historical (current transitions match) |
+> | Relevant Win32 APIs | Historical (hook APIs missing) |
+> | English Layout Selection | Historical (no configuration file exists) |
+> | Restoring the Original Layout | Current |
+> | Foreground-Window Considerations | Historical (replaced by saved-window restore) |
+> | Timing | Historical (the "Better implementation" is what runs) |
+> | Failure Handling | Current |
+> | Security Considerations | Current, historical hook items marked |
+> | Process Lifetime | Current |
+> | Optional Tray Icon | Historical (tray icon is implemented) |
+> | Logging | Current |
+> | Suggested Project Structure | Historical (see AGENTS.md for the actual split) |
+> | Native AOT Publishing | Current |
+> | MVP Scope | Historical |
+> | MVP Acceptance Criteria | Historical |
+> | Future Enhancements | Mixed: interception and tray icon are implemented |
+> | Open Questions to Validate During Prototype | Historical (answered by implementation) |
+> | Recommended First Implementation | Historical |
+
 ## Summary
 
-A very small Windows utility that makes voice typing easier on machines where Finnish is the normal typing language but Windows voice typing is only usable in English.
+A very small Windows utility that makes voice typing easier on machines where
+Finnish is the normal typing language but Windows Voice Typing is only usable
+in English.
 
-The utility provides a single toggle hotkey, tray-gated and off by default
-(session-only opt-in):
+Current behavior (the README is the user documentation):
 
-- First press:
-  1. Remember the input language/layout currently active in the foreground application.
-  2. Switch that application to an English input language.
-  3. Trigger Windows Voice Typing with `Win+H`.
+- Primary entry: physical `Win+H` interception, tray-gated, on by default,
+  session-only. The utility races the English layout switch ahead of
+  Windows' own Voice Typing launch; the hook observes but never swallows or
+  replays `Win+H`.
+- Optional entry: `Ctrl+Alt+H`, tray-gated, off by default, session-only.
+- Start: remember the layout active in the target window, switch that
+  window's input thread to an installed English layout, confirm the switch,
+  then open Windows Voice Typing.
+- Stop: close Voice Typing and restore the saved layout and window. Stop
+  paths are Escape (native close), optional Enter/Space close keys, focus
+  loss, a second Win+H press, and tray Exit.
+- A tray icon reports Idle/Dictating/Disabled status and hosts the
+  session-only toggles.
 
-- Second press:
-  1. Trigger `Win+H` again to stop/close voice typing.
-  2. Restore the original input language/layout that was active before voice typing started.
-
-The goal is to replace one narrow AutoHotkey workflow with a small standalone executable.
+The goal is to replace one narrow AutoHotkey workflow with a small standalone
+executable.
 
 ---
 
@@ -42,7 +87,9 @@ The utility is not intended to:
 - Permanently change the user's default keyboard layout.
 - Manage arbitrary keyboard remappings.
 - Become a general-purpose automation tool.
-- Initially intercept or replace the operating system's own `Win+H` shortcut.
+- ~~Initially intercept or replace the operating system's own `Win+H`
+  shortcut.~~ Historical: superseded; physical `Win+H` interception is
+  implemented as an opt-out feature (see AGENTS.md).
 
 ---
 
@@ -109,8 +156,9 @@ notification-area overflow depending on the user's Windows taskbar preferences.
 Right-click and keyboard context-menu activation show informational application
 and status rows, the toggle rows ("Enable listening", "Enable Ctrl+Alt+H",
 "Intercept Win+H", "Close dictation on Enter", "Close dictation on Space"), and
-Exit. Left-click and double-click are inert. Both toggles are session-only:
-every start begins from the defaults (listening on, hotkey off). Opening the
+Exit. Left-click and double-click are inert. All toggles are session-only:
+every start begins from the defaults (listening on, Win+H interception on,
+hotkey off, Enter/Space close on). Opening the
 menu during dictation follows the existing focus-loss recovery path, so the
 saved layout is restored and the menu reports Idle. Exit waits for any stop
 confirmation and late-popup correction before teardown; an unconfirmed user
@@ -491,7 +539,9 @@ The design intentionally avoids:
 - services;
 - drivers;
 - DLL injection;
-- low-level keyboard hooks for the MVP;
+- ~~low-level keyboard hooks for the MVP~~ (historical: the implemented
+  `WH_KEYBOARD_LL` hook observes `Win+H` and the dictation close keys and is
+  tray-gated, see AGENTS.md);
 - accessibility/UI automation frameworks;
 - third-party keyboard interception libraries;
 - scripting engines;
@@ -517,7 +567,8 @@ The application should:
 - have no self-modifying behavior;
 - perform no networking;
 - avoid keyboard logging;
-- avoid global low-level hooks unless later explicitly needed;
+- ~~avoid global low-level hooks unless later explicitly needed~~ (historical:
+  the implemented hook is opt-out and uninstalled when disabled);
 - ideally be code-signed if possible
 
 ---
@@ -768,7 +819,7 @@ en-US
 en-GB
 ```
 
-### Tray icon
+### Tray icon (implemented)
 
 Show current state and allow clean exit/configuration.
 
@@ -782,7 +833,7 @@ Potentially detect whether Windows Voice Typing actually opened instead of relyi
 
 This should only be added if the simple state model proves unreliable.
 
-### Physical `Win+H` interception
+### Physical `Win+H` interception (implemented)
 
 Implemented as an opt-out feature (tray checkbox "Intercept Win+H", checked by
 default, session-only). The utility installs a `WH_KEYBOARD_LL` hook that
